@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "obsidian": {
+      "command": "/home/redram/rust/mcp_obsidian/target/release/mcp_obsidian",
+      "args": ["--vault", "/home/redram/vault", "serve"]
+    }
+  }
+}
