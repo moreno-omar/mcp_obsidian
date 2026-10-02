@@ -1,10 +1,81 @@
-# SUMMARY.md — mcp_obsidian (Phase 1 complete)
+# SUMMARY.md — mcp_obsidian (Phase 2 complete)
 
-Last updated: 2026-09-28 19:15
+Last updated: 2026-10-01 19:55
 
 How the CLI works, why it is built this way, and what a simpler version would need.
 Goal: after reading this you should be able to rebuild a smaller working version
 yourself.
+
+**Phase 2 (refactor) landed on 2026-10-01.** The two monoliths were split into
+module trees and their behaviour is now pinned by tests. Start at [§0](#0-phase-2--the-refactor).
+For *how to navigate* the resulting code (reading order, module map, "where to
+look if…"), see [ARCHITECTURE.md](ARCHITECTURE.md).
+
+---
+
+## 0. Phase 2 — the refactor
+
+Phase 1 produced working code in five files, two of which had grown past the
+point where you can hold them in your head. Phase 2 changed *structure only*:
+not one byte of CLI, tool or prompt output changed (proof in §3).
+
+### What moved where
+
+```
+src/lib.rs                 the crate's public surface: vault, ollama_client, mcp_server, host
+src/main.rs                thin CLI (clap) — argument parsing plus printing
+
+src/vault/                 was: vault.rs (1060 lines)
+├── mod.rs                 module docs, defaults (DEFAULT_LIMIT …), re-exports
+├── note.rs                Note, VaultStats, Hit, Direction            (data model)
+├── index.rs               Vault: scan → indices → name resolution     (construction)
+├── walk.rs                which files/dirs a scan includes            (fs policy)
+├── parse.rs               markdown → Note: frontmatter, links, tags   (parsing)
+├── query.rs               impl Vault: search_by_tag/term/linked_notes (retrieval)
+├── render.rs              impl Vault: render_hits/note/index          (output)
+└── text.rs                pure string helpers (normalise, score, truncate)
+
+src/ollama_client/         was: ollama_client.rs (566 lines)
+├── mod.rs                 module docs + re-exports
+├── types.rs               constants, ApiFlavor, ChatMessage, ToolCall, ToolSpec
+├── client.rs              OllamaClient: endpoints, version, models, chat
+├── wire.rs                internal types → JSON request body (both dialects)
+└── parse.rs               either dialect's reply → AssistantTurn
+```
+
+### Why it is shaped that way
+
+**One `impl Vault` per concern, in its own file.** Rust lets you write several
+`impl` blocks for the same type in different modules of the same crate, so
+`query.rs` and `render.rs` each hold a small `impl Vault` while the struct and
+its fields stay defined once in `index.rs`. Reading `query.rs` no longer means
+scrolling past frontmatter parsing to find the ranking rules.
+
+**Helpers are free functions in `text.rs`.** They have no `Vault` state to hold —
+just `&str`/`&Note` in, `String`/`u32` out — so they do not need to be methods.
+Keeping them in one file makes it obvious that tag normalisation, term scoring
+and truncation are shared by parsing, querying and rendering.
+
+**The library is the product, the binary is a shell.** `lib.rs` exposes the four
+modules and `main.rs` only parses arguments and prints. That is what makes
+integration tests possible at all: a binary-only crate cannot be linked from
+`tests/`. Cost: the crate now compiles twice (lib + bin), which is free here.
+
+**Behaviour was frozen before it was moved.** The tests were written against the
+public API, then the refactor was checked two ways: `cargo test`, and a
+side-by-side diff of 27 CLI invocations and a full MCP stdio session against a
+`git worktree` build of the pre-refactor commit — byte-identical (§3).
+
+### The tests
+
+| file | tests | covers |
+| :- | :- | :- |
+| `tests/vault_queries.rs` | 22 | stats/index rendering, tag search (incl. nested + `match_all`), term search + ranking, graph walks in all three directions with depth, every note-address type, error messages, rendering and determinism |
+| `tests/ollama_client.rs` | 10 + 1 ignored | client construction and URL normalisation, `model_available`, request bodies, both response dialects, HTTP error and unreachable-server paths; the ignored test does a real round trip (`cargo test -- --ignored live_client`) |
+
+No new dependencies: the Ollama tests run against a ~70-line HTTP server built
+on `std::net::TcpListener`, so both wire dialects are tested offline. `vault`
+tests use `samples/vault`, which is the same fixture the README uses.
 
 ---
 
@@ -18,10 +89,11 @@ A single Rust binary, `mcp_obsidian`, that does two jobs with one retrieval core
    stdio.
 
 ```
+src/lib.rs           the crate's public surface (vault, ollama_client, mcp_server, host)
 src/main.rs          CLI (clap): doctor, index, search, tools, ask, chat, serve
-src/vault.rs         vault scan → in-memory index → 4 deterministic queries
+src/vault/           vault scan → in-memory index → 4 deterministic queries
 src/mcp_server.rs    MCP tools (#[tool]) + shared tool specs/dispatch
-src/ollama_client.rs HTTP to Ollama, two wire dialects → one internal type
+src/ollama_client/   HTTP to Ollama, two wire dialects → one internal type
 src/host.rs          the LLM ↔ vault loop
 ```
 
@@ -128,7 +200,9 @@ that writes one stray byte to stdout corrupts the JSON-RPC stream.
 
 ---
 
-## 3. Verified output (2026-09-28)
+## 3. Verified output
+
+### Phase 1 — 2026-09-28
 
 `doctor`:
 
@@ -156,6 +230,27 @@ tool: get_note {"note":"notes/retrieval-design.md"}
 MCP handshake over stdio: `initialize` negotiates protocol `2025-11-25`, advertises
 `tools`, `tools/list` returns 4 tools with full JSON Schema, `tools/call` returns
 `content[].text` and `isError: false`.
+
+### Phase 2 — 2026-10-01 (refactor)
+
+`cargo test` — 32 tests, 0 failures, 1 ignored:
+
+```
+running 22 tests   (tests/vault_queries.rs)   test result: ok. 22 passed; 0 failed
+running 11 tests   (tests/ollama_client.rs)   test result: ok. 10 passed; 0 failed; 1 ignored
+```
+
+`cargo clippy --all-targets` — no warnings. `cargo build --release` — clean.
+
+Behaviour-preservation check: the pre-refactor commit (`d143c00`) was built in a
+separate `git worktree`, then both binaries were run over the same vault and the
+outputs diffed. All 27 CLI invocations (`index`, every `search` kind and
+direction, every note-address form, and the error paths) are **byte-identical**,
+as is a full MCP stdio session (initialize → tools/list → 3× tools/call).
+
+Largest source file before → after: `vault.rs` 1060 → 318 lines (`index.rs`);
+`ollama_client.rs` 566 → 235 (`client.rs`). Every module is now well under one
+screen of code.
 
 ---
 
@@ -193,6 +288,13 @@ Configuration can also come from the environment: `OBSIDIAN_VAULT`, `OLLAMA_URL`
 (default `http://localhost:11434/v1`), `OLLAMA_MODEL` (default `gemma4:e4b`),
 `RUST_LOG`. `--api native` switches from `/v1/chat/completions` to `/api/chat`.
 
+Tests need no model (the one test that does is ignored):
+
+```bash
+cargo test                            # 32 tests: vault queries + ollama client
+cargo test -- --ignored live_client   # needs `ollama serve` and the model pulled
+```
+
 ---
 
 ## 5. Suggestions (to improve)
@@ -216,14 +318,28 @@ Configuration can also come from the environment: `OBSIDIAN_VAULT`, `OLLAMA_URL`
    `links --check` subcommand listing them per note.
 7. **Escape hatch for the host.** The loop is capped by `--max-rounds`; a hard cap
    on total characters sent back to the model would bound cost more predictably.
+8. **Split `main.rs` next.** It is now the largest file (414 lines) and the last
+   one that mixes concerns: clap types, `run_search` dispatch, `build_host`,
+   `run_serve`, `run_doctor` and `init_tracing`. `cli.rs` + `commands.rs` would
+   bring it to the same size as the rest. (Tracked in TASKS.md.)
+9. **Golden-file tests for rendering.** The exit-criteria for Phase 2 is
+   "same functionality"; that is currently proven by assertions plus a manual
+   A/B diff. Committing the old binary's output as `tests/golden/*.txt` and
+   diffing against it would make the guarantee permanent and automatic.
+10. **Property test for the parsers.** `parse.rs` and `text.rs` are the two
+   modules where a subtle input (a stray `---`, a tag inside a URL, a
+   multi-byte character at a truncation boundary) could silently change output.
+   A `proptest` round-trip over `split_frontmatter` / `extract_inline_tags`
+   would cover far more inputs than the hand-written cases.
 
 ## 6. Possible problems
 
-1. **`AGENTS.md` describes the wrong language.** It mandates Python 3.10+, `.venv`
-   and `pip` while this workspace is a Cargo project (`edition = "2024"`) and
-   SPEC.md asks for an MCP stdio server. Following it literally would put a Python
-   tool in a Rust repo. It needs either a Rust section or to be scoped to other
-   projects.
+1. **`AGENTS.md` still carries Python-flavoured rules.** Its stack section says
+   Rust/Cargo, but the coding-style line asks for "production-grade **Python**
+   code" and there is a "Python Execution Rules" section. Harmless while it is
+   only guidance, but an automated agent following it literally could introduce
+   Python tooling into this Cargo repo. Either drop those lines here or move them
+   to the projects they apply to.
 2. **Frontmatter parsing is deliberately shallow.** Nested YAML maps, anchors and
    multi-line block scalars are ignored, not modelled. A vault relying on those will
    silently lose metadata. Upgrade path: `serde_yaml`/`gray_matter` behind the same
@@ -245,3 +361,17 @@ Configuration can also come from the environment: `OBSIDIAN_VAULT`, `OLLAMA_URL`
    that an MCP client can read it.
 8. **`rmcp` is pre-1.0.** 0.3 → 3.5 rewrote the server traits; the next minor bump
    may require another migration of `mcp_server.rs` (contained, ~250 lines).
+9. **One `impl` block per file is a convention, not an invariant.** Rust is happy
+   with `impl Vault` in `query.rs`, `render.rs` and `index.rs`, but nothing stops
+   a later edit from putting query logic back into `index.rs`. If that matters,
+   make `Vault`'s fields private to `index.rs` (they already are) and route every
+   accessor through `index.rs` — the current split relies on that discipline.
+10. **`term match:` can name the wrong term.** `search_by_term` labels a
+    single-term match with `queries[0]` even when a later term is the one that
+    matched, so a multi-word OR search can report a term the note does not
+    contain. This is pre-existing (unchanged by the refactor) and is now visible
+    in one place: `term_reason()` in `query.rs`. Fixing it changes tool output,
+    so it was left alone deliberately.
+11. **The CLI tests are a snapshot, not a gate.** The 27-invocation A/B diff was
+    run by hand against a `git worktree` of `d143c00`. Nothing re-runs it; the
+    `cargo test` suite is the only automatic protection. See suggestion 9.

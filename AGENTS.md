@@ -2,9 +2,8 @@
 
 ## Environment & Tech Stack
 - **OS:** Linux (Bash shell)
-- **Language:** Python 3.10+
-- **Virtual Environment:** Always use the local `.venv` directory (activate via `source .venv/bin/activate`).
-- **Dependencies:** Install packages strictly via `pip` and update `requirements.txt` when necessary.
+- **Language:** Rust
+- **Dependencies:** Install packages strictly via cargo
 - **databases:** if for single user app, sqlite. Anything else, postgresql.
 
 ## Testing & Validation Rules
@@ -12,8 +11,8 @@
 - **Manual Verification:** Rely strictly on direct script execution, CLI output checks, or dry-run validation logs to confirm code functionality.
 
 ## Python Execution Rules
-- Always use the local virtual environment interpreter directly (.venv/bin/python on Linux/macOS or .venv\Scripts\python.exe on Windows) instead of running `source .venv/bin/activate`.
-- Do not chain commands using `&&` for environment activation. Execute python/pip/manage.py commands using the direct path.o
+
+- Do not chain commands using `&&` for environment activation. Execute python/pip/manage.py commands using the direct path.
 
 ## Summary & Daily File Logging (`YYYY-MM-DD_summary.md`)
 Every new problem addressed and solved on a day (sudo or not) must be logged by appending a new section to the **end** of the dedicated daily summary file using the exact naming convention **`YYYY-MM-DD_summary.md`** (derived from the current system date) at the designated `logs/` directory. Replace `summary` with the actual subject that was worked on.

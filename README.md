@@ -21,8 +21,15 @@
 ## Status
 
 Phase 1 complete (2026-09-28): the CLI can talk to Ollama and the tool set is
-served over MCP. See `SUMMARY.md` for how it works, `logs/MCP_notes.md` for the
-implementation comparison, and `TASKS.md` for what is done and what is next.
+served over MCP.
+
+Phase 2 complete (2026-10-01): the retrieval and Ollama layers are split into
+small modules (`src/vault/`, `src/ollama_client/`) behind a library target, with
+32 tests pinning the behaviour.
+
+See `SUMMARY.md` for how it works and why, `ARCHITECTURE.md` for how to read the
+code and where to change it, `logs/MCP_notes.md` for the implementation
+comparison, and `TASKS.md` for what is done and what is next.
 
 ## Usage
 
@@ -51,4 +58,11 @@ Environment variables `OBSIDIAN_VAULT`, `OLLAMA_URL`, `OLLAMA_MODEL` and
 `/v1/chat/completions` to `/api/chat`.
 
 A sample vault lives in `samples/vault/` for trying the commands above.
+
+## Tests
+
+```bash
+cargo test                            # vault + ollama client; no model needed
+cargo test -- --ignored live_client   # needs a running Ollama with the model pulled
+```
 

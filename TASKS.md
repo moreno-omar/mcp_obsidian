@@ -1,37 +1,22 @@
-# TASKS.md - Phase 1
+# TASKS.md - 2: Refactor
 
-> Completed 2026-09-28. Full log in `logs/2026-09-28_mcp_obsidian_phase1.md`,
-> implementation comparison in `logs/MCP_notes.md`, how-it-works in `SUMMARY.md`.
+- [x] Create tests for vault that test the vault only commands. index. search based tag, term, links, note.
+      → `tests/vault_queries.rs` (22 tests)
+- [x] create tests that works on different address types
+      → `note_lookup_accepts_every_address_type` covers path, `.md`, stem, title,
+        alias, backslashes, `#heading`, `|alias`, fuzzy and error cases.
+- [x] refactor vault.rs, the `impl Vault`, where the functions are split to best grouping across modules.
+      → `src/vault/{index,query,render}.rs` hold one `impl Vault` each.
+- [x] put helper functions in their own file.
+      → `src/vault/text.rs` (pure string helpers), `src/vault/walk.rs` (scan
+        rules), `src/vault/parse.rs` (markdown → `Note`).
+- [x] create tests for ollama_client.rs to test that it can create the client, connect to it, and receive a response.
+      → `tests/ollama_client.rs` (10 tests + 1 `--ignored` live test).
+- [x] refactor ollama_client.rs, `impl OllamaClient`, where the functions are split to best grouping across modules.
+      → `src/ollama_client/{client,types,wire,parse}.rs`.
 
-- [x] download necessary packages. Check if dependencies are up to date. Stable version.
-      → refreshed to current stable: `rmcp 3.5.0` (the docs' pinned `0.3` no longer
-      compiles), `tokio 1.53`, `reqwest 0.13`, `clap 4.6.7` (+`env` feature);
-      `walkdir 2.5` added for the vault scan.
-- [x] read comments on rust files to find out what to put there.
-      → the four root placeholders became `src/ollama_client.rs` (Ollama HTTP and
-      tool calls), `src/mcp_server.rs` (`#[tool_router]` server handler),
-      `src/host.rs` (orchestration loop) and `src/main.rs` (clap CLI); the root
-      copies were removed. `src/vault.rs` holds the retrieval core.
-- [x] ollama reachable on http://localhost:11434/v1. use model gemma4:e4b
-      → `mcp_obsidian doctor` reports Ollama 0.33.1 reachable, 12 models, and
-      `gemma4:e4b` available. Both `/v1/chat/completions` and `/api/chat` work.
-- [x] implement serverhandler
-      → `ObsidianServer` exposes `search_by_tag`, `search_by_term`,
-      `get_linked_notes` and `get_note`; verified with a full
-      `initialize` → `tools/list` → `tools/call` handshake over stdio.
-- [x] provide feedback, in `logs/MCP_notes.md` how this implementation differs,
-      specifically if either did anything better.
-      → written, including a flag that `AGENTS.md` (Python/.venv/pip) does not
-      match this Rust workspace.
-- [x] test rust app to see if it can communicate with ollama.
-      → a plain round trip answered `pong` in 7.8 s; a tool-using question made the
-      model call `search_by_term` then `get_note` and answer with a cited note path.
-      Evidence is in the daily log.
+## Follow-ups (not in scope for phase 2)
 
-## Follow-ups (not started)
-
-- [ ] Return `CallToolResult::error` for genuine tool failures (see `SUMMARY.md` → Suggestions).
-- [ ] Persist the vault index between runs (invalidate on file mtime change).
-- [ ] Expose notes as MCP `resources` in addition to tools.
-- [ ] Heading-scoped retrieval so a note section can be requested instead of a whole note.
-- [ ] Fix `AGENTS.md` so its Python/.venv rules do not apply to this Rust workspace.
+- [ ] Split `src/main.rs` (414 lines): `cli.rs` for the clap types, `commands.rs`
+      for the subcommand bodies. It is the largest file left.
+- [ ] Return `CallToolResult::error` for real tool failures (see SUMMARY.md §5.1).

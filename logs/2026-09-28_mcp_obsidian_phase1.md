@@ -130,3 +130,12 @@ pong                                   # 7.8 s
   breaking bump is plausible and would touch `mcp_server.rs`.
 * Retrieval is lexical, so a question using a synonym the vault never uses returns
   nothing — the intended trade-off (no embeddings), but worth knowing.
+
+## Follow-ups (not started)
+
+- [ ] Return `CallToolResult::error` for genuine tool failures (see `SUMMARY.md` → Suggestions).
+- [ ] Persist the vault index between runs (invalidate on file mtime change).
+- [ ] Expose notes as MCP `resources` in addition to tools.
+- [ ] Heading-scoped retrieval so a note section can be requested instead of a whole note.
+- [ ] Fix `AGENTS.md` so its Python/.venv rules do not apply to this Rust workspace.
+

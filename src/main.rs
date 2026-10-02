@@ -8,10 +8,16 @@
 //! Logging always goes to **stderr**; stdout is reserved for CLI output and, in
 //! `serve` mode, for the JSON-RPC MCP stream.
 
-mod host;
-mod mcp_server;
-mod ollama_client;
-mod vault;
+//! `mcp_obsidian` CLI — a thin front end over the library crate.
+//!
+//! Two ways to use the same retrieval core:
+//!
+//! * `ask` / `chat`  — local host loop: prompt → Ollama → vault tools → answer.
+//! * `serve`         — expose the tools to external MCP hosts over stdio.
+//!
+//! All behaviour lives in [`mcp_obsidian`]; this file only parses arguments and
+//! prints results. Logging always goes to **stderr**; stdout is reserved for
+//! CLI output and, in `serve` mode, for the JSON-RPC MCP stream.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -21,14 +27,13 @@ use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 use rmcp::ServiceExt;
 use tracing_subscriber::EnvFilter;
 
-use crate::host::Host;
-use crate::mcp_server::{
+use mcp_obsidian::host::{self, Host};
+use mcp_obsidian::mcp_server::{
     GetNoteRequest, LinkedNotesRequest, ObsidianServer, SearchByTagRequest, SearchByTermRequest,
     run_get_linked_notes, run_get_note, run_search_by_tag, run_search_by_term,
 };
-use crate::ollama_client::{ApiFlavor, DEFAULT_BASE_URL, DEFAULT_MODEL, OllamaClient};
-use crate::vault::{DEFAULT_BODY_CHARS, DEFAULT_LIMIT, Vault};
-
+use mcp_obsidian::ollama_client::{ApiFlavor, DEFAULT_BASE_URL, DEFAULT_MODEL, OllamaClient};
+use mcp_obsidian::vault::{DEFAULT_BODY_CHARS, DEFAULT_LIMIT, Vault};
 /// Query kinds understood by the `search` command.
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum SearchKind {

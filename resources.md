@@ -34,3 +34,7 @@
 
 ### Open Knowledge Format
 - https://cloud.google.com/blog/products/data-analytics/how-the-open-knowledge-format-can-improve-data-sharing/
+
+## Rust Ollama Clients
+- https://github.com/pepperoni21/ollama-rs
+- https://github.com/iron-cage/api_llm/tree/master/api/ollama (thin client)
