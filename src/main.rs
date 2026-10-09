@@ -1,4 +1,4 @@
-//! `mcp_obsidian` — CLI host and MCP server for an Obsidian markdown vault.
+//! `mcp-obsidian` — CLI host and MCP server for an Obsidian markdown vault.
 //!
 //! Two ways to use the same retrieval core:
 //!
@@ -8,7 +8,7 @@
 //! Logging always goes to **stderr**; stdout is reserved for CLI output and, in
 //! `serve` mode, for the JSON-RPC MCP stream.
 
-//! `mcp_obsidian` CLI — a thin front end over the library crate.
+//! `mcp-obsidian` CLI — a thin front end over the library crate.
 //!
 //! Two ways to use the same retrieval core:
 //!
@@ -25,6 +25,9 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 use rmcp::ServiceExt;
+use rmcp::transport::streamable_http_server::{
+    StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
+};
 use tracing_subscriber::EnvFilter;
 
 use mcp_obsidian::host::{self, Host};
@@ -50,7 +53,7 @@ enum SearchKind {
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "mcp_obsidian",
+    name = "mcp-obsidian",
     version,
     about = "Deterministic, tag- and link-aware retrieval over an Obsidian vault, exposed to LLMs and MCP hosts."
 )]
@@ -163,8 +166,25 @@ enum Command {
         max_rounds: usize,
     },
 
-    /// Serve the retrieval tools to MCP hosts over stdio.
-    Serve,
+    /// Serve the retrieval tools to MCP hosts: stdio by default, Streamable
+    /// HTTP with `--http`.
+    Serve {
+        /// Serve Streamable HTTP on this address instead of stdio. `--http` alone
+        /// uses 127.0.0.1:8000; pass e.g. `0.0.0.0:8000` to expose it.
+        #[arg(
+            long,
+            value_name = "ADDR",
+            num_args = 0..=1,
+            default_missing_value = "127.0.0.1:8000"
+        )]
+        http: Option<String>,
+
+        /// Also accept this `Host` header in HTTP mode (repeatable). Loopback is
+        /// always accepted; add your public hostname, e.g.
+        /// `--allow-host vault.example.com`.
+        #[arg(long, value_name = "HOST", requires = "http")]
+        allow_host: Vec<String>,
+    },
 }
 
 #[tokio::main]
@@ -180,7 +200,10 @@ async fn main() -> Result<()> {
 /// Dispatch one CLI invocation.
 async fn run(cli: &Cli) -> Result<()> {
     match &cli.command {
-        Command::Serve => run_serve(cli).await,
+        Command::Serve { http, allow_host } => match http {
+            Some(address) => run_serve_http(cli, address, allow_host).await,
+            None => run_serve(cli).await,
+        },
         Command::Doctor => run_doctor(cli).await,
         Command::Index { limit } => {
             let vault = load_vault(cli)?;
@@ -363,16 +386,25 @@ fn load_vault(cli: &Cli) -> Result<Vault> {
     Ok(vault)
 }
 
+/// Names of the tools the server exposes, for the `serve` startup banner.
+fn tool_names() -> Vec<String> {
+    ObsidianServer::tool_specs()
+        .into_iter()
+        .map(tool_name)
+        .collect()
+}
+
 /// Run as a stdio MCP server for external hosts.
 async fn run_serve(cli: &Cli) -> Result<()> {
     let vault = Arc::new(load_vault(cli)?);
-    let tool_names: Vec<String> = ObsidianServer::tool_specs()
-        .into_iter()
-        .map(tool_name)
-        .collect();
     // The banner goes to stderr: stdout is the JSON-RPC channel and must stay
     // free of anything that is not an MCP frame.
-    ui::print_serve_banner(&mut ui::stderr_console(), &vault, &tool_names)?;
+    ui::print_serve_banner(
+        &mut ui::stderr_console(),
+        &vault,
+        &tool_names(),
+        "stdio (stdout = JSON-RPC)",
+    )?;
     tracing::info!(
         vault = %vault.root().display(),
         "serving MCP over stdio (stdout is the JSON-RPC channel)"
@@ -384,6 +416,54 @@ async fn run_serve(cli: &Cli) -> Result<()> {
         .context("failed to start MCP server on stdio")?;
     service.waiting().await.context("MCP server stopped")?;
     Ok(())
+}
+
+/// Run as a Streamable-HTTP MCP server for external hosts.
+///
+/// The vault is still scanned exactly once: `StreamableHttpService::new` is
+/// called once and its factory hands every session an `ObsidianServer` over the
+/// same `Arc<Vault>`, rather than re-indexing per connection.
+async fn run_serve_http(cli: &Cli, address: &str, allow_host: &[String]) -> Result<()> {
+    let vault = Arc::new(load_vault(cli)?);
+    let transport = format!("streamable HTTP · http://{address}/mcp");
+    ui::print_serve_banner(&mut ui::stderr_console(), &vault, &tool_names(), &transport)?;
+    tracing::info!(
+        vault = %vault.root().display(),
+        %address,
+        "serving MCP over streamable HTTP"
+    );
+
+    let service = StreamableHttpService::new(
+        move || Ok(ObsidianServer::new(vault.clone())),
+        Arc::new(LocalSessionManager::default()),
+        http_config(allow_host),
+    );
+    let router = axum::Router::new().nest_service("/mcp", service);
+    let listener = tokio::net::TcpListener::bind(address)
+        .await
+        .with_context(|| format!("failed to bind {address}"))?;
+    tracing::info!(%address, "listening for MCP requests");
+    axum::serve(listener, router)
+        .await
+        .context("MCP HTTP server stopped")?;
+    Ok(())
+}
+
+/// Build the HTTP transport configuration.
+///
+/// `rmcp`'s default accepts only loopback `Host` headers (its DNS-rebinding
+/// guard). `--allow-host` adds public hostnames on top of that default rather
+/// than replacing it, so `--allow-host vault.example.com` still answers on
+/// `127.0.0.1`, and an empty list keeps the server unreachable from a browser
+/// pointed at any other name.
+fn http_config(allow_host: &[String]) -> StreamableHttpServerConfig {
+    let config = StreamableHttpServerConfig::default();
+    if allow_host.is_empty() {
+        return config;
+    }
+    let mut hosts = config.allowed_hosts.clone();
+    hosts.extend(allow_host.iter().cloned());
+    config.with_allowed_hosts(hosts)
 }
 
 /// Name of a tool specification.
@@ -487,7 +567,7 @@ async fn run_doctor(cli: &Cli) -> Result<()> {
         ui::print_line(&mut console, "ready", theme::success())?;
         ui::print_hint(
             &mut console,
-            "next: mcp_obsidian --vault <path> ask \"what do my notes say about <topic>?\"",
+            "next: mcp-obsidian --vault <path> ask \"what do my notes say about <topic>?\"",
         )?;
     } else {
         ui::print_line(&mut console, "not ready", theme::error())?;

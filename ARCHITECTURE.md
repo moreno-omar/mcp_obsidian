@@ -12,13 +12,14 @@ see [SPEC.md](SPEC.md).
 
 ### One-paragraph summary — what the project does, in plain terms.
 
-`mcp_obsidian` is a read-only retrieval server for an Obsidian markdown vault. It
+`mcp-obsidian` is a read-only retrieval server for an Obsidian markdown vault. It
 scans the vault **once** at startup into an in-memory index, then answers four
 questions: by tag, by free-text term, by wikilink-graph proximity, and by exact
 note. No model and no network are involved in answering. Those same four queries
-are published two ways from one implementation: as MCP tools over stdio
-(`serve`) for an external host such as Claude Desktop, and as an in-process loop
-(`ask` / `chat`) where a local Ollama model calls the tools itself. There are no
+are published two ways from one implementation: as MCP tools over stdio or
+Streamable HTTP (`serve`) for an external host such as Claude Desktop, and as an
+in-process loop (`ask` / `chat`) where a local Ollama model calls the tools
+itself. There are no
 embeddings — every result carries the tag, term or link that matched it, and the
 same vault plus the same query always produces byte-identical output.
 
@@ -32,7 +33,7 @@ terminal (`src/ui/`, the only module that writes to the user).
 1. **[src/lib.rs](src/lib.rs)** (20 lines) — the crate's public surface: five
    `pub mod` lines and nothing else. Read it first; it tells you the whole
    architecture in five lines.
-2. **[src/main.rs:181](src/main.rs#L181)** — `fn run`. Argument parsing and
+2. **[src/main.rs:201](src/main.rs#L201)** — `fn run`. Argument parsing and
    dispatch only; no logic lives here.
 
 Everything else hangs off those two.
@@ -64,7 +65,7 @@ can delete without changing a single answer.
 ```
 src/
 ├── lib.rs              public surface only: `pub mod vault, ollama_client, mcp_server, host, ui`
-├── main.rs       513   clap CLI: doctor, index, search, tools, ask, chat, serve
+├── main.rs       593   clap CLI: doctor, index, search, tools, ask, chat, serve
 │
 ├── vault/              RETRIEVAL — pure, in-memory, no I/O at query time
 │   ├── mod.rs     39   module map + defaults (DEFAULT_LIMIT / EXCERPT / BODY_CHARS)
@@ -87,7 +88,7 @@ src/
 ├── host.rs       321   ORCHESTRATION — the LLM ↔ vault loop (ask/chat), incl. the
 │                       deterministic pre-search that grounds answers
 └── ui/                 PRESENTATION — never imported by vault/mcp_server/ollama_client
-    ├── mod.rs    321   consoles (tty/NO_COLOR aware), rules, panels, tables, views
+    ├── mod.rs    323   consoles (tty/NO_COLOR aware), rules, panels, tables, views, serve banner
     ├── theme.rs  169   Tokyo Night palette as semantic `richrs::Style` helpers
     ├── markdown.rs 281 markdown → styled runs (headings, code, lists, inline)
     └── wrap.rs   301   styled runs → wrapped lines (word wrap, hard wrap)
@@ -96,6 +97,20 @@ tests/
 ├── vault_queries.rs   22 tests over samples/vault
 └── ollama_client.rs   10 tests + 1 `--ignored` live test
 ```
+
+### Packaging files — outside `src/`, and none of them affect retrieval.
+
+They exist so the binary can be handed to a marketplace. `src/` never reads them.
+
+| File | What it is |
+| :- | :- |
+| [`server.json`](server.json) | Official MCP Registry entry: schema `2025-12-11`, `registryType: "cargo"`, `identifier: mcp-obsidian`, `transport: stdio`, name `io.github.moreno-omar/mcp-obsidian`. Checked by `mcp-publisher validate server.json`. |
+| [`mcpb/manifest.json`](mcpb/manifest.json) | MCPB bundle manifest for Smithery / Claude Desktop: `server.type: "binary"` running `${__dirname}/server/mcp-obsidian --vault ${user_config.vault} serve`, with the vault prompted through `user_config` rather than an environment variable. |
+| [`scripts/build_mcpb.sh`](scripts/build_mcpb.sh) | Builds that bundle into `dist/mcp-obsidian-<version>-<platform>.mcpb`. It refuses to run when `Cargo.toml` and the manifest disagree on the version, because a bundle whose manifest lies about the binary is the one failure that ships silently. |
+| [`PUBLISHING.md`](PUBLISHING.md) | The release runbook: accounts, exact commands, and the publish order. |
+| [`DEPLOYMENT.md`](DEPLOYMENT.md) | Hosting the HTTP transport on a VPS behind TLS — DNS, systemd unit, proxy streaming config, `--allow-host`, verification — and the Smithery / ChatGPT submissions, including the OAuth the code does not have yet. |
+| `README.md` | Carries the `mcp-name: io.github.moreno-omar/mcp-obsidian` token in its *Marketplaces* section. The registry searches the **rendered** crate README for that literal text, and crates.io strips HTML comments, so it has to be visible prose. |
+| [`Cargo.toml`](Cargo.toml) | `description`, `license`, `repository`, `keywords`, `categories`, `rust-version` (1.88 — the floor `rmcp` imposes) and an `exclude` list keeping the dev logs out of the published crate. |
 
 ### Key types/objects.
 
@@ -141,7 +156,7 @@ There are exactly three paths through the code. Every CLI subcommand is one of t
 **A. Vault-only (`index`, `search`, and the MCP tools).** No model, no network:
 
 ```
-main.rs:227 run_search
+main.rs:300 run_search
   └─▶ mcp_server::run_search_by_tag | run_search_by_term
       | run_get_linked_notes | run_get_note      (defaults, validation, error text)
         └─▶ Vault::search_by_tag | search_by_term | get_linked_notes | get_note
@@ -159,15 +174,30 @@ Note the layer: the `run_*` functions own defaults, validation and error text; t
 over MCP run the *same* `run_*` function, which is why both behave identically.
 The CLI then hands the markdown payload to `ui::print_markdown`.
 
-**B. MCP server (`serve`).** [main.rs:367](src/main.rs#L367) prints the startup
-panel to **stderr**, then starts
-`ObsidianServer::new(vault).serve(stdio())`. The `#[tool]` methods
-([mcp_server.rs:136](src/mcp_server.rs#L136)) are thin wrappers that log the call
-(`log_tool_call`, visible with `-vv`) and call the same `run_*` functions. stdout
-carries JSON-RPC only — the banner uses `ui::stderr_console()` and all logging is
-pinned to stderr in `init_tracing` ([main.rs:500](src/main.rs#L500)).
+**B. MCP server (`serve`).** [main.rs:398](src/main.rs#L398) prints the startup
+panel to **stderr**, then serves the same tools one of two ways:
 
-**C. Model loop (`ask`, `chat`).** [main.rs:331](src/main.rs#L331) `build_host`
+* **stdio** (default) — `ObsidianServer::new(vault).serve(stdio())`; stdout
+  carries JSON-RPC only.
+* **Streamable HTTP** (`--http [ADDR]`) —
+  [main.rs:426 `run_serve_http`](src/main.rs#L426) builds one
+  `StreamableHttpService` whose factory hands every session an `ObsidianServer`
+  over the *same* `Arc<Vault>`, nests it at `/mcp` in an `axum` router, and
+  serves it. The vault is still indexed once. HTTP mode has no auth and relies on
+  [`http_config`](src/main.rs#L459), which starts from
+  `StreamableHttpServerConfig::default()` — non-loopback `Host` headers rejected,
+  `rmcp`'s DNS-rebinding guard — and adds any `--allow-host` names *on top*
+  rather than replacing the loopback default. Public deployment still needs a
+  proxy terminating TLS.
+
+The `#[tool]` methods ([mcp_server.rs:136](src/mcp_server.rs#L136)) are thin
+wrappers that log the call (`log_tool_call`, visible with `-vv`) and call the
+same `run_*` functions. In both transports the banner uses
+`ui::stderr_console()` and all logging is pinned to stderr in `init_tracing`. To
+add a *route* (not a tool), edit the router in `run_serve_http`; to change the
+transport, `Serve { http }` in the `Command` enum.
+
+**C. Model loop (`ask`, `chat`).** [main.rs:354](src/main.rs#L354) `build_host`
 wires the two halves together: `Host::new(client, Arc<ObsidianServer>)`, then
 `--no-tools` / `--no-prefetch` switch off the two grounding mechanisms. The loop
 ([host.rs:113 `Host::ask`](src/host.rs#L113)) is:
@@ -219,7 +249,8 @@ ask "…" ─▶ Host::ask
 | Task | File (and symbol) |
 | :- | :- |
 | Add a new MCP tool / LLM tool | [mcp_server.rs](src/mcp_server.rs) — five edits, all in one file: request struct, `run_*` fn, `#[tool]` method, `tool_specs()`, `dispatch()`. Then add the retrieval method in [vault/query.rs](src/vault/query.rs). |
-| Add a CLI subcommand or flag | [main.rs](src/main.rs) — `Command` enum ([83](src/main.rs#L83)), the dispatch `match` in `fn run` ([181](src/main.rs#L181)), and a `run_*` helper. |
+| Add a CLI subcommand or flag | [main.rs](src/main.rs) — `Command` enum ([86](src/main.rs#L86)), the dispatch `match` in `fn run` ([201](src/main.rs#L201)), and a `run_*` helper. |
+| Change the HTTP transport (route, host allow-list, session manager) | [main.rs:426 `run_serve_http`](src/main.rs#L426) for the router and session manager, [main.rs:459 `http_config`](src/main.rs#L459) for the `Host` allow-list. |
 | Change which directories/files get scanned | [vault/walk.rs](src/vault/walk.rs) — `SKIPPED_DIRS` ([14](src/vault/walk.rs#L14)), `is_markdown`, `is_skipped_dir`. |
 | Change how tags, links, headings or frontmatter are parsed | [vault/parse.rs](src/vault/parse.rs) — `split_frontmatter`, `parse_frontmatter`, `scan_body`, `extract_wikilinks` ([216](src/vault/parse.rs#L216)), `extract_inline_tags` ([248](src/vault/parse.rs#L248)). |
 | Change note addressing (path/stem/alias/fuzzy) | [vault/text.rs:93 `normalize_key`](src/vault/text.rs#L93) and [vault/index.rs:165 `resolve_indices`](src/vault/index.rs#L165) / `resolve_one`. |
@@ -237,7 +268,7 @@ ask "…" ─▶ Host::ask
 | Change how a request is encoded (per dialect) | [ollama_client/wire.rs](src/ollama_client/wire.rs) — `request_body` ([12](src/ollama_client/wire.rs#L12)), `message_to_native`, `message_to_openai`. |
 | Change how a reply is decoded | [ollama_client/parse.rs](src/ollama_client/parse.rs) — `parse_native_response` ([14](src/ollama_client/parse.rs#L14)), `parse_openai_response` ([26](src/ollama_client/parse.rs#L26)), `parse_tool_calls` ([55](src/ollama_client/parse.rs#L55)). |
 | Change the loop (round cap, tracing, prompt assembly) | [host.rs](src/host.rs) — `DEFAULT_MAX_ROUNDS` ([32](src/host.rs#L32)), `ask`, `execute`, `chat_loop`. |
-| Change logging verbosity/shape | [main.rs:500 `init_tracing`](src/main.rs#L500) — stderr only, by design. |
+| Change logging verbosity/shape | [main.rs:580 `init_tracing`](src/main.rs#L580) — stderr only, by design. |
 | Add or change tests | [tests/vault_queries.rs](tests/vault_queries.rs), [tests/ollama_client.rs](tests/ollama_client.rs); fixture at [samples/vault/](samples/vault). |
 
 ### Glossary.

@@ -1,4 +1,4 @@
-# SUMMARY.md — mcp_obsidian (Phase 3 complete)
+# SUMMARY.md — mcp-obsidian (Phase 4 in progress)
 
 Last updated: 2026-10-09 19:10
 
@@ -164,9 +164,210 @@ tests use `samples/vault`, which is the same fixture the README uses.
 
 ---
 
+## 0.2 Phase 4 — packaging for the marketplaces (2026-10-09)
+
+Goal: get the binary listed where people look for MCP servers. Nothing about
+retrieval changed; this phase is packaging, metadata and proof. The full runbook
+is in [`PUBLISHING.md`](PUBLISHING.md).
+
+### Problem 1 — the crate could not be published at all
+
+`Cargo.toml` had no `description` and no `license`, which crates.io requires, and
+there was no `LICENSE` file for a directory listing to point at. Fixed by adding
+`description`, `license = "MIT OR Apache-2.0"`, `repository`, `homepage`,
+`readme`, `keywords`, `categories`, `rust-version = "1.88"` (the floor `rmcp`
+imposes) and the two licence texts (`LICENSE-MIT`, `LICENSE-APACHE`), plus an
+`exclude` list so the published crate carries source and fixtures but not the
+development logs.
+
+`cargo publish --dry-run` then packages **51 files, 1.4 MiB compressed** and
+compiles the crate from the extracted tarball — the check that catches a `src/`
+file missing from the package. It also flagged a yanked `yoke-derive v0.8.3` in
+`Cargo.lock`; `cargo update -p yoke-derive` moved it to 0.8.4 and touched nothing
+else.
+
+### Problem 2 — the Official MCP Registry needs a `server.json`, and a Rust one at that
+
+The registry's `mcp-publisher` takes a root `server.json` validated against a live
+schema. The file is written against `2025-12-11` with `registryType: "cargo"`,
+`identifier: "mcp-obsidian"`, `registryBaseUrl: "https://crates.io"` and
+`transport: { "type": "stdio" }`. Two non-obvious rules matter:
+
+* the registry name must be reverse-DNS inside a namespace you can prove you own,
+  so `io.github.moreno-omar/mcp-obsidian` — the GitHub account is a *user*, so
+  GitHub OAuth is enough (an org would require being its owner);
+* for cargo, the package→server binding is proved by the literal text
+  `mcp-name: io.github.moreno-omar/mcp-obsidian` in the crate's **rendered**
+  README, followed by a boundary. crates.io strips HTML comments, so unlike
+  PyPI/NuGet the token cannot be hidden in one; it is a visible paragraph, and it
+  must ship in the version already on crates.io.
+
+`mcp-publisher validate server.json` against the live registry returns
+`✅ server.json is valid`.
+
+### Problem 3 — Smithery ships local servers as MCPB bundles
+
+Smithery's current flow accepts either a remote Streamable-HTTP URL or a local
+**MCPB** bundle (a zip with `manifest.json` at the root). The second is the only
+one a stdio binary can use, so `mcpb/manifest.json` declares
+`server.type: "binary"`, `entry_point: "server/mcp-obsidian"`, an `mcp_config` that
+runs `${__dirname}/server/mcp-obsidian --vault ${user_config.vault} serve`, and a
+`user_config.vault` directory prompt so the host asks the user for the vault path
+instead of relying on an environment variable.
+[`scripts/build_mcpb.sh`](scripts/build_mcpb.sh) builds the release binary, stages
+`manifest.json` + `server/mcp-obsidian`, and zips
+`dist/mcp-obsidian-<version>-<platform>.mcpb` (5.8 MiB on Linux, after the HTTP transport added `axum`). The manifest
+validates against `mcpb-manifest-latest.schema.json`, and the extracted bundle was
+driven through `initialize` and `tools/call` to prove the packaged binary really
+serves MCP.
+
+### Problem 4 — the ChatGPT directory needs a remote server, not a bundle
+
+OpenAI's plugin/app review requires a **publicly reachable remote MCP server over
+HTTPS** and rejects local or testing endpoints outright. Packaging cannot fix
+that — the server has to speak Streamable HTTP — and domain verification, OAuth
+and organisation verification sit on top of it. Adding the transport (problem 5)
+is the part that lives in this repository; hosting and identity are deployment
+work.
+
+### Problem 5 — `serve` only spoke stdio
+
+Nothing could reach the server without spawning the process, so the directory
+goal was structurally unreachable. `Serve { http }` now switches transports:
+`run_serve_http` ([main.rs:420](src/main.rs#L420)) builds one
+`StreamableHttpService` whose factory hands every session an `ObsidianServer`
+over the *same* `Arc<Vault>` — so the vault is still indexed exactly once — nests
+it at `/mcp` in an `axum` router, and serves it. `--http` alone binds
+`127.0.0.1:8000`; pass `0.0.0.0:8000` to expose it. stdio stays the default, so
+stdout remains the JSON-RPC channel.
+
+Measured over HTTP: `initialize` returns `200` with an `Mcp-Session-Id` and the
+SSE frame, `notifications/initialized` returns `202`, `tools/list` returns the
+same four tools, `tools/call` answers from the vault, an unknown path is `404`,
+and a non-loopback `Host` header is **`403 Forbidden: Host header is not
+allowed`** — `rmcp`'s DNS-rebinding guard, which is also why a public deployment
+must add its own hostname with `with_allowed_hosts`. There is **no
+authentication**: loopback behind a reverse proxy is the intended shape.
+
+### What was verified
+
+| check | how | result |
+| :- | :- | :- |
+| MCP protocol | `initialize` / `tools/list` / `tools/call` over stdio | 4 tools, correct `serverInfo` + `instructions`, `isError: false`, `-32602` for an unknown tool |
+| MCP over HTTP | `serve --http` + `curl` at `/mcp` | `initialize` 200 + `Mcp-Session-Id`, `notifications/initialized` 202, `tools/list` 4 tools, `tools/call` answers from the vault |
+| Host guard | `Host: evil.example.com` over HTTP | `403 Forbidden: Host header is not allowed` |
+| registry metadata | `mcp-publisher validate server.json` (v1.8.1) | `✅ server.json is valid` |
+| crate contents | `cargo package --list` | 51 files; `logs/` and dev notes excluded |
+| crate build | `cargo publish --dry-run` | packages and compiles from the tarball |
+| bundle manifest | `ajv -s mcpb-manifest-latest.schema.json` | valid |
+| bundle runtime | extracted `.mcpb` + stdio probe | answers from `samples/vault` |
+
+---
+
+## 0.3 Phase 4c — rename to `mcp-obsidian` and the first real publish (2026-10-09)
+
+### Problem — the published name was wrong
+
+The crate was `mcp_obsidian` but the registry identity, the GitHub-facing
+`server.json` and the intended listing are all `mcp-obsidian`. crates.io treats
+`-` and `_` as the **same** name, so whichever spelling is published first
+reserves both — publishing the underscore version would have locked in a name
+that disagrees with everything user-facing.
+
+### The rename is asymmetric on purpose
+
+`name = "mcp-obsidian"` in `Cargo.toml`, and the executable is named explicitly:
+
+```toml
+[[bin]]
+name = "mcp-obsidian"
+path = "src/main.rs"
+```
+
+The `[[bin]]` block is not decoration. The MCPB manifest, the host-config example
+and the README all invoke the executable by name, so pinning it means a future
+package rename cannot silently change the contract the bundle depends on.
+
+The **library crate path stays `mcp_obsidian`** — Cargo normalises `-` to `_` for
+the crate identifier, so `use mcp_obsidian::…`, both integration-test files and
+`src/mcp_server.rs` needed no change at all. Only the user-visible names moved:
+the package, the binary, the clap `name`, `serverInfo.name`, the two `ui` panel
+titles, the `doctor` hint line, `scripts/build_mcpb.sh`'s `BINARY`, and the
+`server.json` `identifier`. Rewriting the docs needed care not to touch three
+kinds of incidental string: the `demo_mcp_obsidian_*.gif` /
+`mcp_obsidian_chat.png` asset names, the `moreno-omar/mcp_obsidian` git remote,
+and `logs/…_phase4_publishing.md` — all still `mcp_obsidian` and all correct.
+
+### The publish got all the way to the upload and was refused
+
+`cargo login` accepted the token and `cargo publish --allow-dirty` packaged,
+compiled from the tarball and uploaded — then:
+
+```
+error: failed to publish mcp-obsidian v0.1.0 to registry at https://crates.io
+Caused by:
+  the remote server responded with an error (status 400 Bad Request): A verified
+  email address is required to publish crates to crates.io.
+  Visit https://crates.io/settings/profile to set and verify your email address.
+```
+
+That is **not** an authentication failure — a bad token returns `403`, and this
+reached the upload. It is a gate on the account, and the only fix is verifying the
+email in the web UI; nothing the CLI can do. The token file was deleted straight
+after login (before the publish attempt, so it could never be packaged), and it
+was already on `Cargo.toml`'s `exclude` list as a second line of defence.
+
+### What was verified
+
+| check | how | result |
+| :- | :- | :- |
+| rename | `cargo build --release` | binary is `target/release/mcp-obsidian` |
+| CLI identity | `mcp-obsidian --version` | `mcp-obsidian 0.1.0` |
+| MCP identity | `initialize` | `serverInfo.name = "mcp-obsidian"` |
+| tests | `cargo test` | 32 pass (10 + 22), 1 ignored; unchanged by the rename |
+| lints | `cargo clippy --all-targets` | clean |
+| crate | `cargo publish --dry-run --allow-dirty` | 51 files / 1.4 MiB, compiles |
+| secret hygiene | `cargo package --list` | `keys.md` absent, then deleted |
+
+---
+
+## 0.4 Phase 4d — published to crates.io (2026-10-09)
+
+The email was verified, so the publish that [§0.3](#03-phase-4c--rename-to-mcp-obsidian-and-the-first-real-publish-2026-10-09)
+had left at the upload gate ran clean and succeeded:
+
+```
+   Uploading mcp-obsidian v0.1.0 (/home/redram/rust/mcp_obsidian)
+    Uploaded mcp-obsidian v0.1.0 to registry `crates-io`
+   Published mcp-obsidian v0.1.0 at registry `crates-io`
+```
+
+`mcp-obsidian` v0.1.0 is live at <https://crates.io/crates/mcp-obsidian>, licensed
+`MIT OR Apache-2.0`, so `cargo install mcp-obsidian` works.
+
+**The registry prerequisite was then verified rather than assumed.** The MCP
+Registry proves package ownership by fetching the crate's *rendered* README from
+the static CDN and searching for the `mcp-name:` token. Reproducing that check by
+hand — `GET /api/v1/crates/mcp-obsidian/0.1.0/readme` → follow the reported URL →
+search the HTML — confirms the token is present as **visible text** followed by a
+valid boundary (`<`), not a stripped HTML comment. So the Official MCP Registry
+publish is now a single `mcp-publisher login github && mcp-publisher publish`
+whenever it is wanted; only the namespace login is outstanding.
+
+### What was verified
+
+| check | how | result |
+| :- | :- | :- |
+| publish | `cargo publish --allow-dirty` | uploaded and published |
+| crate metadata | `crates.io/api/v1/crates/mcp-obsidian` | name `mcp-obsidian`, version `0.1.0`, `MIT OR Apache-2.0` |
+| ownership token | rendered README on `static.crates.io` | `mcp-name: io.github.moreno-omar/mcp-obsidian` present, visible, valid boundary |
+| token file | `ls keys.md` | gone; also on `Cargo.toml`'s `exclude` and in `.gitignore` |
+
+---
+
 ## 1. What exists now
 
-A single Rust binary, `mcp_obsidian`, that does two jobs with one retrieval core:
+A single Rust binary, `mcp-obsidian`, that does two jobs with one retrieval core:
 
 1. **Local host loop** — `ask` / `chat`: prompt → Ollama → (model calls vault tools)
    → grounded answer.
@@ -356,7 +557,7 @@ is new.
 The exit criterion, `~/rust/test_vault` (490 notes), 5 consecutive runs:
 
 ```
-$ ./target/release/mcp_obsidian --vault ~/rust/test_vault \
+$ ./target/release/mcp-obsidian --vault ~/rust/test_vault \
     ask "how does one do list comprehensions in python?" --trace
   · prefetch search_by_term [list, comprehensions, python]
   · get_note {"note":"python/python_oneliners/list comprehensions.md"}
@@ -369,7 +570,7 @@ The same question before the fix: `rounds: 1 | tool calls: 0` and a refusal
 MCP server, stdout kept pure (`initialize` → `tools/call`), banner on stderr:
 
 ```
-╭─ mcp_obsidian · serve ───────────────────────────────────────────────────────╮
+╭─ mcp-obsidian · serve ───────────────────────────────────────────────────────╮
 │ transport stdio (stdout = JSON-RPC)                                          │
 │ vault     /…/samples/vault                                                   │
 │ indexed   4 notes, 11 tags, 0 unresolved links                               │
@@ -382,19 +583,19 @@ MCP server, stdout kept pure (`initialize` → `tools/call`), banner on stderr:
 ## 4. Using it
 
 ```bash
-cargo build --release                     # binary at target/release/mcp_obsidian
+cargo build --release                     # binary at target/release/mcp-obsidian
 
 # no model needed
-./target/release/mcp_obsidian --vault ~/vault index
-./target/release/mcp_obsidian --vault ~/vault search tag project --match-all
-./target/release/mcp_obsidian --vault ~/vault search term "token budget"
-./target/release/mcp_obsidian --vault ~/vault search links index --depth 2
+./target/release/mcp-obsidian --vault ~/vault index
+./target/release/mcp-obsidian --vault ~/vault search tag project --match-all
+./target/release/mcp-obsidian --vault ~/vault search term "token budget"
+./target/release/mcp-obsidian --vault ~/vault search links index --depth 2
 
 # with Ollama
-./target/release/mcp_obsidian --vault ~/vault doctor
-./target/release/mcp_obsidian --vault ~/vault ask "what do my notes say about token budgets?" --trace
-./target/release/mcp_obsidian --vault ~/vault ask "…" --no-prefetch   # tools only, no pre-search
-./target/release/mcp_obsidian --vault ~/vault chat
+./target/release/mcp-obsidian --vault ~/vault doctor
+./target/release/mcp-obsidian --vault ~/vault ask "what do my notes say about token budgets?" --trace
+./target/release/mcp-obsidian --vault ~/vault ask "…" --no-prefetch   # tools only, no pre-search
+./target/release/mcp-obsidian --vault ~/vault chat
 ```
 
 As an MCP server (`claude_desktop_config.json`):
@@ -403,8 +604,8 @@ As an MCP server (`claude_desktop_config.json`):
 {
   "mcpServers": {
     "obsidian": {
-      "command": "/home/redram/rust/mcp_obsidian/target/release/mcp_obsidian",
-      "args": ["--vault", "/home/redram/vault", "serve"]
+      "command": "mcp-obsidian",
+      "args": ["--vault", "/absolute/path/to/your/vault", "serve"]
     }
   }
 }
@@ -481,6 +682,27 @@ cargo test -- --ignored live_client   # needs `ollama serve` and the model pulle
    `aliases:` already exists in the parser) could soften that without
    embeddings.
 
+14. **Authenticate and host the HTTP transport.** The transport itself now
+   exists (`serve --http`, problem 5); what the ChatGPT/plugin directory and
+   Smithery's URL tab still need is OAuth on top of it and a public HTTPS
+   deployment with domain verification. `rmcp` has an `auth` feature for the
+   OAuth side. Session state is in-memory only (`LocalSessionManager`), so a
+   multi-instance deployment would also need a shared session store. This turns
+   a private single-user tool into a hosted service — decide it deliberately.
+15. **Automate the two publishes in CI.** `cargo publish` on a tag plus
+   `mcp-publisher login github-oidc` + `publish` would remove every manual step
+   in `PUBLISHING.md`; it needs a `CARGO_REGISTRY_TOKEN` secret and an
+   `id-token: write` permission, and would make the "crate first, registry
+   second" ordering structural instead of documentary.
+16. **Give the MCPB bundle an icon and screenshots.** The manifest schema accepts
+   `icon` and `screenshots`, and the repo already has the demo GIFs and PNGs.
+   Marketplace listings convert much better with them than with text alone.
+17. **Cross-build the bundle.** `scripts/build_mcpb.sh` bundles only the host
+   platform. macOS and Windows bundles need `cargo-zigbuild`/`cross` or a CI
+   matrix, which is also the only way to sign them.
+18. ~~**Reserve the name now.**~~ **Done** — `mcp-obsidian` v0.1.0 was published
+    on 2026-10-09, which reserves both the hyphen and underscore spellings.
+
 ## 6. Possible problems
 
 1. **`AGENTS.md` still carries Python-flavoured rules.** Its stack section says
@@ -541,3 +763,42 @@ cargo test -- --ignored live_client   # needs `ollama serve` and the model pulle
     so follow-up questions in `ask` cannot refer to the previous answer (only
     `chat` has a loop, and it too rebuilds per turn). History would need to live
     in `Host`, plus a token budget to keep it bounded.
+16. **The registry name is tied to the GitHub account.** `io.github.moreno-omar/*`
+    is only claimable while that account owns it, and the README token must match
+    `server.json`'s `name` exactly — a mismatch fails the publish with a message
+    that reads like a permissions problem, not a typo.
+17. **Version numbers live in three files.** `Cargo.toml`, `server.json` and
+    `mcpb/manifest.json` all carry `0.1.0`. `build_mcpb.sh` refuses to build when
+    the manifest and the crate disagree, but nothing checks `server.json`; a
+    registry publish with a stale version fails because the crate version must
+    already exist on crates.io, and `server.json.version` is what gets listed.
+18. **The publish order is load-bearing.** The registry verifies the crate's
+    rendered README, so `cargo publish` has to happen *before*
+    `mcp-publisher publish`, and the `mcp-name:` token has to be in that published
+    version. Reversing the order, or adding the token afterwards, fails.
+19. **A binary MCPB bundle is unsigned native code.** It is also
+    platform-specific, so one bundle cannot serve macOS and Windows. On those
+    platforms an unsigned binary triggers Gatekeeper or SmartScreen, and clearing
+    that needs paid Apple/Windows signing certificates.
+20. **The directory listings are manual and partly commercial.** MCP.so's form
+    offers a $39 instant listing and needs a Google/email sign-in; Smithery needs
+    an account; Glama auto-indexes GitHub. None of it is scripted, so a listing
+    will drift from the repo unless it is re-checked — and PulseMCP's submission
+    page is currently paused, pointing at the official registry instead.
+21. **crates.io refuses the upload without a verified email.** A valid token
+    authenticated fine and got all the way to the upload, then failed with
+    `status 400: A verified email address is required`. It read like a token
+    problem and was not; the fix was <https://crates.io/settings/profile>.
+    Resolved 2026-10-09, but worth remembering for any new account or CI token:
+    the failure mode is late and looks like a credential problem.
+22. **A hosted vault is a privacy change, not just a deployment step.** Reaching
+    the OpenAI directory means the vault has to sit on a public server, and the
+    HTTP transport has no authentication yet. A VPS can host it, but until OAuth
+    exists anyone who can reach the URL can read every note. Local-first is the
+    safer default; host only if that trade is deliberate — see
+    [DEPLOYMENT.md](DEPLOYMENT.md).
+23. **The published token is not revoked by deleting the file.** `keys.md` is
+    gone, but the token is still live in `~/.cargo/credentials.toml` and on
+    crates.io, with full publish access to the account. Revoke it at
+    <https://crates.io/me> when it is no longer needed, and prefer a scoped
+    `publish-new`/`publish-update` token over a full-access one.

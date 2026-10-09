@@ -14,6 +14,44 @@
 - to allow RAG use
 
 
+## Install
+
+```bash
+cargo install mcp-obsidian
+```
+
+Then point it at a vault:
+
+```bash
+mcp-obsidian --vault ~/vault index      # print the index, no model involved
+mcp-obsidian --vault ~/vault serve      # stdio MCP server for a desktop host
+mcp-obsidian --vault ~/vault serve --http   # Streamable HTTP on 127.0.0.1:8000/mcp
+```
+
+## Marketplaces
+
+**Published on crates.io:** <https://crates.io/crates/mcp-obsidian>
+
+```bash
+cargo install mcp-obsidian
+mcp-obsidian --vault ~/vault serve
+```
+
+The crate is dual-licensed and its `README` carries the registry ownership token,
+so it can also be listed in the Official MCP Registry and shipped as an MCPB
+bundle without further changes.
+
+* [PUBLISHING.md](PUBLISHING.md) — release runbook and the account each directory
+  requires.
+* [DEPLOYMENT.md](DEPLOYMENT.md) — hosting behind a public HTTPS URL on a VPS,
+  plus the Smithery and ChatGPT directory submissions and the OAuth they need.
+
+The line below is the package-ownership token the registry verifies against this
+crate's README. It must stay visible in plain text — crates.io strips HTML
+comments — and must match the `name` in [`server.json`](server.json).
+
+mcp-name: io.github.moreno-omar/mcp-obsidian
+
 ## Demo
 
 Everything below runs **locally on one desktop** — an NVIDIA **RTX 4060 Ti**
@@ -23,11 +61,11 @@ traffic is `localhost:11434`.
 
 ### `ask` — one prompt, answered from the vault
 
-![mcp_obsidian ask demo](demo_mcp_obsidian_ask.gif)
+![mcp-obsidian ask demo](demo_mcp_obsidian_ask.gif)
 
 ### `chat` — the same loop, interactive
 
-![mcp_obsidian chat demo](demo_mcp_obsidian_chat.gif)
+![mcp-obsidian chat demo](demo_mcp_obsidian_chat.gif)
 
 | Preview | What it shows |
 | :- | :- |
@@ -37,7 +75,7 @@ traffic is `localhost:11434`.
 
 ### Fast, because this is a CLI and not a full-fledged TUI
 
-`mcp_obsidian` **prints**, it does not **paint**. There is no alternate screen, no
+`mcp-obsidian` **prints**, it does not **paint**. There is no alternate screen, no
 event loop and no per-frame redraw: colours and layout are computed once per
 answer with `richrs`, written to stdout, and the process exits. Measured on the
 machine above:
@@ -74,6 +112,15 @@ tool still gets the relevant notes. Output is rendered with `richrs` in a Tokyo
 Night theme for `ask`, `chat`, `doctor`, `index`, `search` and `serve` (colours
 auto-off when piping).
 
+Phase 4 in progress (2026-10-09): **published to crates.io as `mcp-obsidian`
+v0.1.0** (`cargo install mcp-obsidian`). The binary is dual-licensed and carries
+registry metadata; [`server.json`](server.json) validates against the Official MCP
+Registry; `scripts/build_mcpb.sh` produces a schema-valid MCPB bundle for
+Smithery; and `serve --http` adds a Streamable-HTTP transport for remote hosts.
+See [DEPLOYMENT.md](DEPLOYMENT.md) for hosting it behind a public HTTPS URL and
+listing it on Smithery and the ChatGPT directory, and
+`logs/2026-10-09_mcp_obsidian_phase4_publishing.md` for the detail.
+
 See `SUMMARY.md` for how it works and why, `ARCHITECTURE.md` for how to read the
 code and where to change it, `logs/MCP_notes.md` for the implementation
 comparison, and `TASKS.md` for what is done and what is next.
@@ -84,22 +131,35 @@ comparison, and `TASKS.md` for what is done and what is next.
 cargo build --release
 
 # vault-only commands (no model needed)
-./target/release/mcp_obsidian --vault ~/vault index
-./target/release/mcp_obsidian --vault ~/vault search tag project --match-all
-./target/release/mcp_obsidian --vault ~/vault search term "token budget"
-./target/release/mcp_obsidian --vault ~/vault search links index --depth 2
-./target/release/mcp_obsidian --vault ~/vault search note projects/alpha
+./target/release/mcp-obsidian --vault ~/vault index
+./target/release/mcp-obsidian --vault ~/vault search tag project --match-all
+./target/release/mcp-obsidian --vault ~/vault search term "token budget"
+./target/release/mcp-obsidian --vault ~/vault search links index --depth 2
+./target/release/mcp-obsidian --vault ~/vault search note projects/alpha
 
 # with Ollama (defaults: http://localhost:11434/v1, gemma4:e4b)
-./target/release/mcp_obsidian --vault ~/vault doctor
-./target/release/mcp_obsidian --vault ~/vault ask "what do my notes say about token budgets?" --trace
-./target/release/mcp_obsidian --vault ~/vault ask "…" --no-prefetch   # no pre-search, tools only
-./target/release/mcp_obsidian --vault ~/vault chat
+./target/release/mcp-obsidian --vault ~/vault doctor
+./target/release/mcp-obsidian --vault ~/vault ask "what do my notes say about token budgets?" --trace
+./target/release/mcp-obsidian --vault ~/vault ask "…" --no-prefetch   # no pre-search, tools only
+./target/release/mcp-obsidian --vault ~/vault chat
 
 # as an MCP server for a desktop host
-./target/release/mcp_obsidian --vault ~/vault serve
-./target/release/mcp_obsidian --vault ~/vault serve -vv   # log each tool call to stderr
+./target/release/mcp-obsidian --vault ~/vault serve
+./target/release/mcp-obsidian --vault ~/vault serve -vv   # log each tool call to stderr
+
+# as an MCP server over Streamable HTTP (for a host that cannot spawn a process)
+./target/release/mcp-obsidian --vault ~/vault serve --http            # 127.0.0.1:8000/mcp
+./target/release/mcp-obsidian --vault ~/vault serve --http 0.0.0.0:8000
+./target/release/mcp-obsidian --vault ~/vault serve --http 0.0.0.0:8000 \
+  --allow-host vault.example.com                                      # accept that Host header
 ```
+
+`serve` speaks stdio by default so stdout stays the JSON-RPC channel; `--http`
+switches to Streamable HTTP on `/mcp` instead. HTTP mode has **no
+authentication** — it binds loopback by default and `rmcp` rejects non-loopback
+`Host` headers, so put a reverse proxy in front of it before exposing it
+publicly. See `PUBLISHING.md` for what the ChatGPT/plugin directory additionally
+requires.
 
 A ready-to-edit host configuration is in `claude_desktop_config.example.json`.
 Environment variables `OBSIDIAN_VAULT`, `OLLAMA_URL`, `OLLAMA_MODEL` and
@@ -119,4 +179,13 @@ A sample vault lives in `samples/vault/` for trying the commands above.
 cargo test                            # vault + ollama client; no model needed
 cargo test -- --ignored live_client   # needs a running Ollama with the model pulled
 ```
+
+## License
+
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
+[MIT license](LICENSE-MIT) at your option.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in this crate by you, as defined in the Apache-2.0 license, shall
+be dual licensed as above, without any additional terms or conditions.
 

@@ -292,7 +292,7 @@ pub fn print_chat_banner(
         ),
         ("exit".to_string(), "/exit or Ctrl-D".to_string()),
     ];
-    print_panel(console, "mcp_obsidian · chat", "", &rows)
+    print_panel(console, "mcp-obsidian · chat", "", &rows)
 }
 
 /// Write the `you>` prompt without a trailing newline.
@@ -301,15 +301,17 @@ pub fn write_user_prompt(console: &mut Console) -> RichResult<()> {
     console.flush()
 }
 
-/// Print the `serve` startup banner on **stderr** (stdout carries JSON-RPC).
+/// Print the `serve` startup banner on **stderr** (stdout carries JSON-RPC) for
+/// either transport, so a host's stderr capture is the one place to look.
 pub fn print_serve_banner(
     console: &mut Console,
     vault: &Vault,
     tools: &[String],
+    transport: &str,
 ) -> RichResult<()> {
     let stats = vault.stats();
     let rows = vec![
-        ("transport".to_string(), "stdio (stdout = JSON-RPC)".to_string()),
+        ("transport".to_string(), transport.to_string()),
         ("vault".to_string(), vault.root().display().to_string()),
         (
             "indexed".to_string(),
@@ -317,5 +319,5 @@ pub fn print_serve_banner(
         ),
         ("tools".to_string(), tools.join(", ")),
     ];
-    print_panel(console, "mcp_obsidian · serve", "", &rows)
+    print_panel(console, "mcp-obsidian · serve", "", &rows)
 }

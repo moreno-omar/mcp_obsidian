@@ -7,15 +7,17 @@ A command-line Model Context Protocol (MCP) server that retrieves relevant Obsid
 - **Vault Indexer:** Scans a configured Obsidian vault directory, parses markdown files, and builds an in-memory index of notes, tags, wikilinks, backlinks, frontmatter, and headings.
 - **Query Parser:** Interprets incoming MCP tool-call parameters (tags, search terms, linked-note references, and traversal depth) into a structured retrieval query.
 - **Graph-Aware Retriever:** Resolves relevant notes by intersecting tag matches, term matches (title, heading, body), and link-graph proximity (direct links, backlinks, and N-hop neighbors). Ranks and deduplicates results.
-- **MCP Interface Layer:** Exposes retrieval capabilities as MCP tools over stdio (and optionally HTTP), compatible with LLM clients such as Claude Desktop or other MCP hosts.
+- **MCP Interface Layer:** Exposes retrieval capabilities as MCP tools over stdio (default) or Streamable HTTP (`serve --http`), compatible with LLM clients such as Claude Desktop or other MCP hosts.
 - **Output Formatter:** Serializes retrieved notes into clean, LLM-friendly payloads (markdown with metadata headers, or structured JSON) with optional token-budget truncation.
 
 ## Non-Goals
-- Building a full graphical user interface (CLI and MCP stdio only).
+- Building a full graphical user interface (CLI and MCP transports only).
 - Implementing RAG, vector embeddings, or semantic similarity search.
 - Supporting PDF, DOCX, or other non-markdown file ingestion.
 - Writing back to, editing, or mutating the Obsidian vault (read-only access).
-- Hosting a multi-user authenticated service (single-user, local-first).
+- Hosting a multi-user authenticated service (single-user, local-first). The
+  optional Streamable-HTTP transport adds no authentication: it must stay on
+  loopback or sit behind a reverse proxy that terminates TLS and auth.
 
 ## Acceptance Criteria
 - Successfully indexes a sample Obsidian vault containing markdown notes with tags, wikilinks, and frontmatter.

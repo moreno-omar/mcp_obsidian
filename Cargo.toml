@@ -1,10 +1,36 @@
 [package]
-name = "mcp_obsidian"
+name = "mcp-obsidian"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.88"
+description = "Deterministic, tag- and link-aware retrieval over an Obsidian markdown vault, exposed to LLMs and MCP hosts over stdio or Streamable HTTP."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/moreno-omar/mcp_obsidian"
+homepage = "https://github.com/moreno-omar/mcp_obsidian"
+readme = "README.md"
+keywords = ["mcp", "obsidian", "markdown", "llm", "retrieval"]
+categories = ["command-line-utilities"]
+exclude = [
+    "logs/**",
+    "failed_command.md",
+    "resources.md",
+    "rust_module_guidelines.md",
+    "ARCHITECTURE_example.md",
+    # Belt and braces: the token file is deleted before publishing, but a
+    # denylist entry means a re-created one can never reach crates.io.
+    "keys.md",
+]
+
+# The executable is named explicitly: the MCPB bundle, the host config example
+# and the README all invoke it by name, so it must not drift if the package is
+# ever renamed again. Hyphens are legal in a binary and normal for `cargo install`.
+[[bin]]
+name = "mcp-obsidian"
+path = "src/main.rs"
 
 [dependencies]
-rmcp = { version = "3.5", features = ["server", "macros", "transport-io"] }
+rmcp = { version = "3.5", features = ["server", "macros", "transport-io", "transport-streamable-http-server"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 tokio = { version = "1.53", features = ["full"] }
 reqwest = { version = "0.13", features = ["json"] }
 serde = { version = "1.0", features = ["derive"] }

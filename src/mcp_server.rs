@@ -173,7 +173,7 @@ impl ObsidianServer {
 // `SERVER_INSTRUCTIONS`, which the local host loop uses as its system prompt.
 #[tool_handler(
     router = self.tool_router,
-    name = "mcp_obsidian",
+    name = "mcp-obsidian",
     version = "0.1.0",
     instructions = "Read-only, deterministic retrieval over the user's Obsidian vault (tags, full-text terms, wikilink graph). Always call a tool before answering a question about the vault's contents; never answer from your own knowledge, and cite the note paths you used."
 )]

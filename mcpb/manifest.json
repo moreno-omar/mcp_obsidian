@@ -1,0 +1,42 @@
+{
+  "manifest_version": "0.3",
+  "name": "mcp-obsidian",
+  "display_name": "Obsidian Notes",
+  "version": "0.1.0",
+  "description": "Search an Obsidian vault by tag, term and wikilink graph. Read-only, deterministic, no embeddings.",
+  "long_description": "A read-only retrieval server for a local Obsidian markdown vault. It indexes the vault once at startup and answers from it deterministically: by tag, by free-text term, by wikilink-graph proximity, and by exact note. There is no model and no network involved in answering, no embeddings, and the same vault plus the same query always produces the same output. Every result cites the tag, term or link that matched it.",
+  "author": {
+    "name": "Omar Moreno",
+    "email": "moreno.x.omar@proton.me",
+    "url": "https://github.com/moreno-omar"
+  },
+  "homepage": "https://github.com/moreno-omar/mcp_obsidian",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/moreno-omar/mcp_obsidian"
+  },
+  "documentation": "https://github.com/moreno-omar/mcp_obsidian/blob/main/README.md",
+  "support": "https://github.com/moreno-omar/mcp_obsidian/issues",
+  "license": "MIT OR Apache-2.0",
+  "keywords": ["mcp", "obsidian", "markdown", "notes", "retrieval"],
+  "server": {
+    "type": "binary",
+    "entry_point": "server/mcp-obsidian",
+    "mcp_config": {
+      "command": "${__dirname}/server/mcp-obsidian",
+      "args": ["--vault", "${user_config.vault}", "serve"],
+      "env": {}
+    }
+  },
+  "user_config": {
+    "vault": {
+      "type": "directory",
+      "title": "Obsidian vault",
+      "description": "Directory containing your Obsidian markdown notes. It is opened read-only; nothing is ever written back.",
+      "required": true
+    }
+  },
+  "compatibility": {
+    "platforms": ["darwin", "win32", "linux"]
+  }
+}
