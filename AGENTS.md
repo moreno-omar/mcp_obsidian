@@ -10,9 +10,9 @@
 - **Skip Testing by default:**  Do not write test files or run unit tests. Can write tests when refactoring or make a replacing tools. Like postgresql for sqlite, python pymupdf for pdfplumber.
 - **Manual Verification:** Rely strictly on direct script execution, CLI output checks, or dry-run validation logs to confirm code functionality.
 
-## Python Execution Rules
+## Rust Execution Rules
 
-- Do not chain commands using `&&` for environment activation. Execute python/pip/manage.py commands using the direct path.
+- Do not chain commands using `&&` for environment activation. Execute commands using the direct path.
 
 ## Summary & Daily File Logging (`YYYY-MM-DD_summary.md`)
 Every new problem addressed and solved on a day (sudo or not) must be logged by appending a new section to the **end** of the dedicated daily summary file using the exact naming convention **`YYYY-MM-DD_summary.md`** (derived from the current system date) at the designated `logs/` directory. Replace `summary` with the actual subject that was worked on.
@@ -31,8 +31,9 @@ Every new problem addressed and solved on a day (sudo or not) must be logged by 
   7. **Possible problems** Things that can become problems. Problems what were not addressed. etc.
 
 ## Coding Style & Guardrails
-- Write clean, modular, production-grade Python code with clear docstrings and type hints.
+- Write clean, modular, production-grade Rust code with clear docstrings and type hints.
 - functions should be independent and do one job only (mostly).
+- No anonymous functions. Create helper functions instead. Especially when being used for `filter`, `map`, and similar functions.
 - Keep modifications scoped strictly to the requested feature or bug fix.
 - Do not introduce external dependencies or databases unless explicitly authorized in the architecture specification.
 - Never execute destructive git commands or commit changes automatically.

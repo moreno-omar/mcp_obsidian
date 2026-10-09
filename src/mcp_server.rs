@@ -24,13 +24,19 @@ use crate::ollama_client::ToolSpec;
 use crate::vault::{DEFAULT_BODY_CHARS, DEFAULT_EXCERPT_CHARS, DEFAULT_LIMIT, Direction, Vault};
 
 /// Guidance shared by the MCP `instructions` field and the host system prompt.
+///
+/// The first paragraph is deliberately imperative: local models otherwise
+/// answer from their own knowledge and never call a tool at all.
 pub const SERVER_INSTRUCTIONS: &str = "\
-This server exposes a read-only Obsidian markdown vault. Prefer searching the \
-vault over guessing: use search_by_tag for topical lookup, search_by_term for \
-full-text lookup, get_linked_notes to follow the wikilink graph (links and \
-backlinks) and get_note to read a specific note. Note paths returned by the \
-tools can be passed back as the `note` argument of get_linked_notes or \
-get_note. Cite the note path you used when answering.";
+This server exposes a read-only Obsidian markdown vault. Always search the \
+vault before answering a question about its contents: never answer from your \
+own knowledge, and never tell the user that the vault has nothing on a topic \
+before you have searched it. Use search_by_tag for topical lookup, \
+search_by_term for full-text lookup, get_linked_notes to follow the wikilink \
+graph (links and backlinks) and get_note to read a specific note in full. Note \
+paths returned by the tools can be passed back as the `note` argument of \
+get_linked_notes or get_note. Answer from the returned notes only, cite the \
+note path(s) you used, and say so plainly when nothing matches.";
 
 fn default_limit() -> usize {
     DEFAULT_LIMIT
@@ -131,37 +137,45 @@ impl ObsidianServer {
     }
 
     #[tool(
-        description = "Search Obsidian notes by tag. Returns matching note paths with metadata and a short excerpt."
+        description = "Search the vault by tag. Call this before answering any question about a topic; tags also match nested tags (e.g. 'project' matches 'project/alpha')."
     )]
     fn search_by_tag(&self, Parameters(request): Parameters<SearchByTagRequest>) -> String {
+        log_tool_call("search_by_tag", &request);
         run_search_by_tag(&self.vault, &request)
     }
 
     #[tool(
-        description = "Search Obsidian notes by free-text term across title, tags, headings, frontmatter and body."
+        description = "Search the vault full-text across title, tags, headings, frontmatter and body. Start here for most questions: pass the subject words as separate terms, e.g. [\"list\", \"comprehensions\", \"python\"]."
     )]
     fn search_by_term(&self, Parameters(request): Parameters<SearchByTermRequest>) -> String {
+        log_tool_call("search_by_term", &request);
         run_search_by_term(&self.vault, &request)
     }
 
     #[tool(
-        description = "Follow the wikilink graph from a note: its outgoing links, its backlinks, or both, up to N hops."
+        description = "Follow the wikilink graph from a note: its outgoing links, its backlinks, or both, up to N hops. Use a path returned by another tool as `note`."
     )]
     fn get_linked_notes(&self, Parameters(request): Parameters<LinkedNotesRequest>) -> String {
+        log_tool_call("get_linked_notes", &request);
         run_get_linked_notes(&self.vault, &request)
     }
 
-    #[tool(description = "Read one Obsidian note in full, with its metadata header.")]
+    #[tool(
+        description = "Read one note in full, with its metadata header. Use the paths returned by the search tools."
+    )]
     fn get_note(&self, Parameters(request): Parameters<GetNoteRequest>) -> String {
+        log_tool_call("get_note", &request);
         run_get_note(&self.vault, &request)
     }
 }
 
+// The macro needs a literal, so this short form is kept in sync by hand with
+// `SERVER_INSTRUCTIONS`, which the local host loop uses as its system prompt.
 #[tool_handler(
     router = self.tool_router,
     name = "mcp_obsidian",
     version = "0.1.0",
-    instructions = "Read-only retrieval over an Obsidian markdown vault."
+    instructions = "Read-only, deterministic retrieval over the user's Obsidian vault (tags, full-text terms, wikilink graph). Always call a tool before answering a question about the vault's contents; never answer from your own knowledge, and cite the note paths you used."
 )]
 impl ServerHandler for ObsidianServer {}
 
@@ -178,22 +192,22 @@ impl ObsidianServer {
         vec![
             ToolSpec::new(
                 "search_by_tag",
-                "Search Obsidian notes by tag. Tags match nested tags too (e.g. 'project' matches 'project/alpha').",
+                "Search the vault by tag. Call this before answering any question about a topic; tags also match nested tags (e.g. 'project' matches 'project/alpha').",
                 schema_of::<SearchByTagRequest>(),
             ),
             ToolSpec::new(
                 "search_by_term",
-                "Search Obsidian notes by free-text term across title, tags, headings, frontmatter and body.",
+                "Search the vault full-text across title, tags, headings, frontmatter and body. Start here for most questions: pass the subject words as separate terms, e.g. [\"list\", \"comprehensions\", \"python\"].",
                 schema_of::<SearchByTermRequest>(),
             ),
             ToolSpec::new(
                 "get_linked_notes",
-                "Follow the wikilink graph from a note: outgoing links, backlinks or both, up to N hops.",
+                "Follow the wikilink graph from a note: outgoing links, backlinks or both, up to N hops. Use a path returned by another tool as `note`.",
                 schema_of::<LinkedNotesRequest>(),
             ),
             ToolSpec::new(
                 "get_note",
-                "Read one Obsidian note in full, with its metadata header.",
+                "Read one note in full, with its metadata header. Use the paths returned by the search tools.",
                 schema_of::<GetNoteRequest>(),
             ),
         ]
@@ -222,6 +236,11 @@ impl ObsidianServer {
             other => anyhow::bail!("unknown tool '{other}'"),
         }
     }
+}
+
+/// Log one MCP tool call, so `serve -v` shows what an external host asked for.
+fn log_tool_call<T: std::fmt::Debug>(name: &str, request: &T) {
+    tracing::debug!(tool = name, args = %format!("{request:?}"), "mcp tool call");
 }
 
 /// Deserialize tool arguments, reporting the tool name on failure.

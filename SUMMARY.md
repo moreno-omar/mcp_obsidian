@@ -1,19 +1,104 @@
-# SUMMARY.md — mcp_obsidian (Phase 2 complete)
+# SUMMARY.md — mcp_obsidian (Phase 3 complete)
 
-Last updated: 2026-10-01 19:55
+Last updated: 2026-10-09 19:10
 
 How the CLI works, why it is built this way, and what a simpler version would need.
 Goal: after reading this you should be able to rebuild a smaller working version
 yourself.
 
-**Phase 2 (refactor) landed on 2026-10-01.** The two monoliths were split into
-module trees and their behaviour is now pinned by tests. Start at [§0](#0-phase-2--the-refactor).
-For *how to navigate* the resulting code (reading order, module map, "where to
-look if…"), see [ARCHITECTURE.md](ARCHITECTURE.md).
+**Phase 3 (reliable, readable answers) landed on 2026-10-09.** Grounded answers,
+a deterministic pre-search and a Tokyo Night terminal UI. Start at
+[§0](#0-phase-3--grounded-answers-and-tokyo-night-output-2026-10-09).
+**Phase 2 (refactor) landed on 2026-10-01** — see [§0.1](#01-phase-2--the-refactor).
+For *how to navigate* the code (reading order, module map, "where to look if…"),
+see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ---
 
-## 0. Phase 2 — the refactor
+## 0. Phase 3 — grounded answers and Tokyo Night output (2026-10-09)
+
+Phase 3's exit criterion is an answer to *"how does one do list comprehensions
+in python?"* built from a vault note that contains it. Two things blocked that.
+
+### Problem 1 — `ask` often did not use the tools
+
+Reproduced with `--trace` against a 490-note vault: the same question returned
+`rounds: 1 | tool calls: 0` in 3 of 5 runs. In those runs the model answered from
+its own knowledge — once word for word: *"my capabilities are limited to
+searching and retrieving information from the provided Obsidian markdown vault,
+and Python programming syntax is not content stored within the vault"* — even
+though `python/python_oneliners/list comprehensions.md` exists.
+
+Diagnosis was done by measuring the request in isolation (same prompt, same tool
+definitions, straight to `/v1/chat/completions`):
+
+| configuration | tool call in round 1 |
+| :- | :- |
+| old system prompt | 1/3 |
+| + mandatory "search before answering" prompt | 4/6 |
+| `tool_choice: "required"` | 1/3 — Ollama's OpenAI endpoint ignores it |
+| tool schemas stripped of `$schema` / `format` / `default` | 2/4 |
+| `temperature: 0` | 0/4 — it deterministically answers directly |
+
+So the cause is **model behaviour, not the request**: `gemma4:e4b` decides
+case-by-case whether a question is "vault-worthy", and no request field forces
+that decision. Two changes fix it:
+
+1. **An imperative protocol.** `SERVER_INSTRUCTIONS` — shared by the host system
+   prompt *and* the MCP `instructions` field — plus every tool description now
+   says *always search the vault before answering, never from your own
+   knowledge*, and `search_by_term` tells the model to pass the subject words as
+   separate terms (`["list", "comprehensions", "python"]`) instead of one phrase.
+2. **A deterministic pre-search.** Before any model call, `Host::prefetch_notes`
+   runs the prompt's subject words (stopword-filtered, ≤8 terms) through the same
+   retrieval core and injects the top 3 hits into the system prompt. It takes
+   milliseconds and needs no model, so the relevant notes are *always* in
+   context, even for a model that never calls a tool. `--no-prefetch` disables it.
+
+Result after the change: 5/5 runs grounded in the vault, 0 refusals. One of those
+runs answered from the pre-searched notes *without* calling a tool at all — the
+safety net doing exactly its job. Adding one sentence to the prompt ("call
+`get_note` when an excerpt ends in `…[truncated]`") and widening `PREFETCH_CHARS`
+to 800 then gave 3/3 runs that called a tool and cited the note path in a
+340–460 word answer.
+
+### Problem 2 — the output was raw text
+
+New module `src/ui/` renders through `richrs` with a Tokyo Night palette:
+
+```
+src/ui/mod.rs        consoles, rules, panels, tables, per-command views
+src/ui/theme.rs      the palette: RGB colours + semantic Style helpers
+src/ui/markdown.rs   markdown → styled runs (headings, bullets, quotes,
+                     fenced code, inline code / bold / italic / links)
+src/ui/wrap.rs       runs → wrapped lines: word wrap for prose, hard wrap for
+                     code that breaks at the last space of the line
+```
+
+Details that matter for a CLI like this one:
+
+* `ui::stdout_console()` / `ui::stderr_console()` disable colour when the stream
+  is not a terminal or `NO_COLOR` is set, so `| grep`, `> file` and the MCP
+  **stdout** JSON-RPC stream stay byte-clean. `FORCE_COLOR`/`CLICOLOR_FORCE`
+  force colour back on (used to verify the ANSI output while developing).
+* A closed stdout (`cmd | head`) now exits 0 instead of reporting an I/O error.
+* `serve` prints a startup panel to **stderr** only: vault, note count and the
+  four tool names; `serve -vv` logs every MCP tool call.
+* `ask` renders the model's markdown answer (headings, bullets, fenced code,
+  inline code, emphasis, links) under the same theme; `--trace` shows the
+  pre-search, each tool call and the round summary on stderr.
+* Prose is **word-wrapped** to the terminal width with continuation lines aligned
+  under the text (not under the bullet or the quote bar); code blocks are
+  hard-wrapped at cell boundaries, breaking at the last space of the line, so
+  columns survive. A width of `0` disables wrapping, and redirected output uses
+  it, which keeps `ask "…" > answer.md` byte-faithful.
+* `chat` gets a welcome panel, a teal `you>` prompt, a blue `llm>` label and the
+  same answer rendering.
+* `doctor`, `index` (now a table), `search` and `tools` were restyled too.
+
+---
+
+## 0.1 Phase 2 — the refactor
 
 Phase 1 produced working code in five files, two of which had grown past the
 point where you can hold them in your head. Phase 2 changed *structure only*:
@@ -89,12 +174,13 @@ A single Rust binary, `mcp_obsidian`, that does two jobs with one retrieval core
    stdio.
 
 ```
-src/lib.rs           the crate's public surface (vault, ollama_client, mcp_server, host)
+src/lib.rs           the crate's public surface (vault, ollama_client, mcp_server, host, ui)
 src/main.rs          CLI (clap): doctor, index, search, tools, ask, chat, serve
 src/vault/           vault scan → in-memory index → 4 deterministic queries
 src/mcp_server.rs    MCP tools (#[tool]) + shared tool specs/dispatch
 src/ollama_client/   HTTP to Ollama, two wire dialects → one internal type
-src/host.rs          the LLM ↔ vault loop
+src/host.rs          the LLM ↔ vault loop, including the deterministic pre-search
+src/ui/              presentation only: Tokyo Night theme + markdown renderer
 ```
 
 Data flow, no model in the loop:
@@ -108,9 +194,15 @@ vault dir ──scan──> Vault { notes, tag_index, term_index, links, backlin
 Data flow, with a model:
 
 ```
-prompt ─> Ollama (tools[]) ─> tool_calls ─> ObsidianServer::dispatch ─> vault
-   ^                                                                    │
-   └────────── assistant content <── tool results (as text) <────────────┘
+prompt ─┬─> prefetch: subject words ─> Vault search (deterministic, ms)
+        │                                     │
+        └─> Ollama (tools[] + pre-searched notes in the system prompt)
+                 │
+                 ├─> tool_calls ─> ObsidianServer::dispatch ─> vault
+                 │                        │
+                 │                        └─> tool results (as text)
+                 │
+                 └─> answer ─> src/ui: markdown + Tokyo Night ─> stdout
 ```
 
 ---
@@ -252,6 +344,39 @@ Largest source file before → after: `vault.rs` 1060 → 318 lines (`index.rs`)
 `ollama_client.rs` 566 → 235 (`client.rs`). Every module is now well under one
 screen of code.
 
+### Phase 3 — 2026-10-09 (grounding + UI)
+
+`cargo clippy --release --all-targets` — no warnings. `cargo test --release` —
+`tests/vault_queries.rs` 22 passed, `tests/ollama_client.rs` 10 passed + 1
+ignored (the live-model test). No vault or tool payload changed: `render_hits`,
+`render_note` and `render_index` are byte-identical (their tests still pass), so
+MCP hosts see exactly the same text as before — only the CLI's own presentation
+is new.
+
+The exit criterion, `~/rust/test_vault` (490 notes), 5 consecutive runs:
+
+```
+$ ./target/release/mcp_obsidian --vault ~/rust/test_vault \
+    ask "how does one do list comprehensions in python?" --trace
+  · prefetch search_by_term [list, comprehensions, python]
+  · get_note {"note":"python/python_oneliners/list comprehensions.md"}
+rounds: 2 | tool calls: 1            # 5/5 runs grounded, 0 refusals
+```
+
+The same question before the fix: `rounds: 1 | tool calls: 0` and a refusal
+("my capabilities are limited to searching … the vault") in 3 of 5 runs.
+
+MCP server, stdout kept pure (`initialize` → `tools/call`), banner on stderr:
+
+```
+╭─ mcp_obsidian · serve ───────────────────────────────────────────────────────╮
+│ transport stdio (stdout = JSON-RPC)                                          │
+│ vault     /…/samples/vault                                                   │
+│ indexed   4 notes, 11 tags, 0 unresolved links                               │
+│ tools     search_by_tag, search_by_term, get_linked_notes, get_note          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
 ---
 
 ## 4. Using it
@@ -268,6 +393,7 @@ cargo build --release                     # binary at target/release/mcp_obsidia
 # with Ollama
 ./target/release/mcp_obsidian --vault ~/vault doctor
 ./target/release/mcp_obsidian --vault ~/vault ask "what do my notes say about token budgets?" --trace
+./target/release/mcp_obsidian --vault ~/vault ask "…" --no-prefetch   # tools only, no pre-search
 ./target/release/mcp_obsidian --vault ~/vault chat
 ```
 
@@ -287,6 +413,11 @@ As an MCP server (`claude_desktop_config.json`):
 Configuration can also come from the environment: `OBSIDIAN_VAULT`, `OLLAMA_URL`
 (default `http://localhost:11434/v1`), `OLLAMA_MODEL` (default `gemma4:e4b`),
 `RUST_LOG`. `--api native` switches from `/v1/chat/completions` to `/api/chat`.
+
+Output is coloured only when the stream is a terminal: set `NO_COLOR=1` to turn
+it off explicitly, `FORCE_COLOR=1` (or `CLICOLOR_FORCE`) to force it on when
+piping. `--trace` writes the pre-search, the tool calls and the round summary to
+stderr, so `ask … > answer.md` still produces a clean markdown file.
 
 Tests need no model (the one test that does is ignored):
 
@@ -318,7 +449,7 @@ cargo test -- --ignored live_client   # needs `ollama serve` and the model pulle
    `links --check` subcommand listing them per note.
 7. **Escape hatch for the host.** The loop is capped by `--max-rounds`; a hard cap
    on total characters sent back to the model would bound cost more predictably.
-8. **Split `main.rs` next.** It is now the largest file (414 lines) and the last
+8. **Split `main.rs` next.** It is now the largest file (513 lines) and the last
    one that mixes concerns: clap types, `run_search` dispatch, `build_host`,
    `run_serve`, `run_doctor` and `init_tracing`. `cli.rs` + `commands.rs` would
    bring it to the same size as the rest. (Tracked in TASKS.md.)
@@ -331,6 +462,24 @@ cargo test -- --ignored live_client   # needs `ollama serve` and the model pulle
    multi-byte character at a truncation boundary) could silently change output.
    A `proptest` round-trip over `split_frontmatter` / `extract_inline_tags`
    would cover far more inputs than the hand-written cases.
+11. **Render tables and LaTeX-ish blocks.** The model already emits markdown
+   tables and `$$…$$` formulas; today they fall through as plain text. A
+   markdown table → `richrs::Table` conversion would be the single most visible
+   improvement left.
+12. **Use model capabilities to tune the request — and measure once more.**
+   `gemma4:e4b` is a *thinking* model, and `"think": false` looked faster
+   (2.5–5.6 s vs ~10 s with tools) and more tool-call-prone (3/4 vs ~40%) in the
+   diagnosis runs. A later, tool-free measurement however showed the default
+   request at 6.7 s and `think: false` at 5.9 s, i.e. the OpenAI dialect is
+   already *not* thinking unless `"think": true` is sent (12.8 s, `reasoning`
+   populated). So the latency lever here is smaller than the first number
+   suggested; `/api/show` reports `capabilities: […"thinking"]`, which is the
+   clean way to decide, and the numbers above should be re-measured before
+   wiring a flag.
+13. **RAG-free semantic help.** When the pre-search finds nothing, a synonym the
+   vault never uses still fails. A per-note keyword/alias list (frontmatter
+   `aliases:` already exists in the parser) could soften that without
+   embeddings.
 
 ## 6. Possible problems
 
@@ -375,3 +524,20 @@ cargo test -- --ignored live_client   # needs `ollama serve` and the model pulle
 11. **The CLI tests are a snapshot, not a gate.** The 27-invocation A/B diff was
     run by hand against a `git worktree` of `d143c00`. Nothing re-runs it; the
     `cargo test` suite is the only automatic protection. See suggestion 9.
+12. **The pre-search is lexical and can mislead.** `prefetch_notes` picks the top
+    3 notes for up to 8 stopword-filtered words. A question whose words are
+    common in the vault (e.g. "what should I work on?") injects a semi-random
+    slice, and a small model may anchor on it. `--no-prefetch` is the escape
+    hatch; raise `PREFETCH_*` constants deliberately, not casually.
+13. **Grounding is not verification.** The prompt now forbids answering from
+    memory, but nothing checks that the answer cites a note the tools actually
+    returned. A cheap guard would be to drop or flag answers whose note paths do
+    not appear in the tool results.
+14. **Colour detection trusts the environment.** `richrs` defaults to true colour
+    unless `TERM` says otherwise, and `ui` disables colour only for a
+    non-terminal or `NO_COLOR`. Terminals that are 8-colour (or Windows legacy)
+    will still get 24-bit sequences unless `TERM` is accurate.
+15. **`ask` is one-shot and stateless.** Each prompt rebuilds the message list,
+    so follow-up questions in `ask` cannot refer to the previous answer (only
+    `chat` has a loop, and it too rebuilds per turn). History would need to live
+    in `Host`, plus a token budget to keep it bounded.

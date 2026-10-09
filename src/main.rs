@@ -33,6 +33,7 @@ use mcp_obsidian::mcp_server::{
     run_get_linked_notes, run_get_note, run_search_by_tag, run_search_by_term,
 };
 use mcp_obsidian::ollama_client::{ApiFlavor, DEFAULT_BASE_URL, DEFAULT_MODEL, OllamaClient};
+use mcp_obsidian::ui::{self, theme};
 use mcp_obsidian::vault::{DEFAULT_BODY_CHARS, DEFAULT_LIMIT, Vault};
 /// Query kinds understood by the `search` command.
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -134,11 +135,15 @@ enum Command {
         #[arg(long)]
         no_tools: bool,
 
+        /// Skip the deterministic pre-search of the vault.
+        #[arg(long)]
+        no_prefetch: bool,
+
         /// Maximum model rounds before giving up.
         #[arg(long, default_value_t = host::DEFAULT_MAX_ROUNDS)]
         max_rounds: usize,
 
-        /// Print every tool call the model made to stderr.
+        /// Print the pre-search and every tool call the model made to stderr.
         #[arg(long)]
         trace: bool,
     },
@@ -148,6 +153,10 @@ enum Command {
         /// Skip tool calling and just chat.
         #[arg(long)]
         no_tools: bool,
+
+        /// Skip the deterministic pre-search of the vault.
+        #[arg(long)]
+        no_prefetch: bool,
 
         /// Maximum model rounds per prompt.
         #[arg(long, default_value_t = host::DEFAULT_MAX_ROUNDS)]
@@ -162,13 +171,20 @@ enum Command {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     init_tracing(cli.verbose);
+    match run(&cli).await {
+        Err(error) if closed_stdout(&error) => Ok(()),
+        other => other,
+    }
+}
 
+/// Dispatch one CLI invocation.
+async fn run(cli: &Cli) -> Result<()> {
     match &cli.command {
-        Command::Serve => run_serve(&cli).await,
-        Command::Doctor => run_doctor(&cli).await,
+        Command::Serve => run_serve(cli).await,
+        Command::Doctor => run_doctor(cli).await,
         Command::Index { limit } => {
-            let vault = load_vault(&cli)?;
-            println!("{}", vault.render_index(*limit));
+            let vault = load_vault(cli)?;
+            ui::print_index(&mut ui::stdout_console(), &vault, *limit)?;
             Ok(())
         }
         Command::Search {
@@ -180,11 +196,16 @@ async fn main() -> Result<()> {
             direction,
             max_chars,
         } => {
-            let vault = load_vault(&cli)?;
+            let vault = load_vault(cli)?;
             let output = run_search(
                 &vault, *kind, query, *match_all, *limit, *depth, direction, *max_chars,
             );
-            println!("{output}");
+            ui::print_search(
+                &mut ui::stdout_console(),
+                kind_label(*kind),
+                &query.join(" "),
+                &output,
+            )?;
             Ok(())
         }
         Command::Tools => {
@@ -195,30 +216,59 @@ async fn main() -> Result<()> {
         Command::Ask {
             prompt,
             no_tools,
+            no_prefetch,
             max_rounds,
             trace,
         } => {
-            let host = build_host(&cli, !*no_tools, *max_rounds)?;
+            let host = build_host(cli, !*no_tools, !*no_prefetch, *max_rounds)?;
             let outcome = host.ask(&prompt.join(" ")).await?;
             if *trace {
-                for (tool, arguments) in &outcome.trace {
-                    eprintln!("tool: {tool} {arguments}");
+                let mut console = ui::stderr_console();
+                if let Some(query) = &outcome.prefetch {
+                    ui::print_prefetch(&mut console, query)?;
                 }
-                eprintln!(
-                    "rounds: {} | tool calls: {}",
-                    outcome.rounds, outcome.tool_calls
-                );
+                ui::print_trace(&mut console, &outcome.trace)?;
+                ui::print_summary(&mut console, outcome.rounds, outcome.tool_calls)?;
             }
-            println!("{}", outcome.answer.trim());
+            ui::print_answer(&mut ui::stdout_console(), outcome.answer.trim())?;
             Ok(())
         }
         Command::Chat {
             no_tools,
+            no_prefetch,
             max_rounds,
         } => {
-            let host = build_host(&cli, !*no_tools, *max_rounds)?;
+            let host = build_host(cli, !*no_tools, !*no_prefetch, *max_rounds)?;
             host.chat_loop().await
         }
+    }
+}
+
+/// Human-readable label for a search kind, used in the result header.
+fn kind_label(kind: SearchKind) -> &'static str {
+    match kind {
+        SearchKind::Tag => "tags",
+        SearchKind::Term => "terms",
+        SearchKind::Links => "links",
+        SearchKind::Note => "note",
+    }
+}
+
+/// `cmd | head` closes stdout early; that is not an error worth reporting.
+fn closed_stdout(error: &anyhow::Error) -> bool {
+    match error.downcast_ref::<richrs::errors::Error>() {
+        Some(rich_error) => is_broken_pipe(rich_error),
+        None => false,
+    }
+}
+
+/// Whether a richrs I/O error is a broken pipe.
+fn is_broken_pipe(error: &richrs::errors::Error) -> bool {
+    match error {
+        richrs::errors::Error::ConsoleIo { source } => {
+            source.kind() == std::io::ErrorKind::BrokenPipe
+        }
+        _ => false,
     }
 }
 
@@ -278,16 +328,18 @@ fn run_search(
 }
 
 /// Build a host loop from the CLI configuration.
-fn build_host(cli: &Cli, use_tools: bool, max_rounds: usize) -> Result<Host> {
+fn build_host(cli: &Cli, use_tools: bool, use_prefetch: bool, max_rounds: usize) -> Result<Host> {
     let vault = Arc::new(load_vault(cli)?);
     let client = OllamaClient::new(&cli.ollama_url, cli.api, &cli.model)?;
     let server = Arc::new(ObsidianServer::new(vault));
-    let host = Host::new(client, server).with_max_rounds(max_rounds);
-    Ok(if use_tools {
-        host
-    } else {
-        host.without_tools()
-    })
+    let mut host = Host::new(client, server).with_max_rounds(max_rounds);
+    if !use_tools {
+        host = host.without_tools();
+    }
+    if !use_prefetch {
+        host = host.without_prefetch();
+    }
+    Ok(host)
 }
 
 /// Index the configured vault, logging what was found.
@@ -314,6 +366,13 @@ fn load_vault(cli: &Cli) -> Result<Vault> {
 /// Run as a stdio MCP server for external hosts.
 async fn run_serve(cli: &Cli) -> Result<()> {
     let vault = Arc::new(load_vault(cli)?);
+    let tool_names: Vec<String> = ObsidianServer::tool_specs()
+        .into_iter()
+        .map(tool_name)
+        .collect();
+    // The banner goes to stderr: stdout is the JSON-RPC channel and must stay
+    // free of anything that is not an MCP frame.
+    ui::print_serve_banner(&mut ui::stderr_console(), &vault, &tool_names)?;
     tracing::info!(
         vault = %vault.root().display(),
         "serving MCP over stdio (stdout is the JSON-RPC channel)"
@@ -327,25 +386,34 @@ async fn run_serve(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
+/// Name of a tool specification.
+fn tool_name(spec: mcp_obsidian::ollama_client::ToolSpec) -> String {
+    spec.name
+}
+
 /// Verify Ollama reachability, model presence and vault indexing.
 async fn run_doctor(cli: &Cli) -> Result<()> {
     let client = OllamaClient::new(&cli.ollama_url, cli.api, &cli.model)?;
-    println!("configuration");
-    println!("  vault       : {}", cli.vault.display());
-    println!("  model       : {}", client.model());
-    println!("  api         : {}", client.api().as_str());
-    println!("  base url    : {}", client.base_url());
-    println!("  chat url    : {}", client.chat_url());
+    let mut console = ui::stdout_console();
 
-    println!("\nollama");
+    ui::print_rule(&mut console, "configuration")?;
+    ui::print_row(
+        &mut console,
+        "vault",
+        &cli.vault.display().to_string(),
+        theme::path(),
+    )?;
+    ui::print_row(&mut console, "model", client.model(), theme::value())?;
+    ui::print_row(&mut console, "api", client.api().as_str(), theme::value())?;
+    ui::print_row(&mut console, "base url", client.base_url(), theme::path())?;
+    ui::print_row(&mut console, "chat url", &client.chat_url(), theme::path())?;
+
+    ui::print_rule(&mut console, "ollama")?;
     match client.version().await {
-        Ok(version) => println!(
-            "  version     : {version} (reachable at {} /api/version)",
-            client.base_url()
-        ),
+        Ok(version) => ui::print_row(&mut console, "version", &version, theme::success())?,
         Err(error) => {
-            println!("  version     : UNREACHABLE ({error})");
-            println!("  hint        : start it with `ollama serve`");
+            ui::print_row(&mut console, "version", &format!("UNREACHABLE ({error})"), theme::error())?;
+            ui::print_hint(&mut console, "start it with `ollama serve`")?;
         }
     }
 
@@ -353,47 +421,78 @@ async fn run_doctor(cli: &Cli) -> Result<()> {
     match client.models().await {
         Ok(models) => {
             model_ok = OllamaClient::model_available(&models, client.model());
-            println!("  models      : {} found", models.len());
-            println!(
-                "  model check : {} is {}",
-                client.model(),
-                if model_ok { "available" } else { "MISSING" }
-            );
+            ui::print_row(
+                &mut console,
+                "models",
+                &format!("{} found", models.len()),
+                theme::value(),
+            )?;
+            ui::print_row(
+                &mut console,
+                "model check",
+                &format!(
+                    "{} is {}",
+                    client.model(),
+                    if model_ok { "available" } else { "MISSING" }
+                ),
+                if model_ok { theme::success() } else { theme::error() },
+            )?;
             if !model_ok {
                 let sample: Vec<&str> = models.iter().take(5).map(String::as_str).collect();
-                println!(
-                    "  hint        : `ollama pull {}` (installed: {})",
-                    client.model(),
-                    sample.join(", ")
-                );
+                ui::print_hint(
+                    &mut console,
+                    &format!("`ollama pull {}` (installed: {})", client.model(), sample.join(", ")),
+                )?;
             }
         }
-        Err(error) => println!("  models      : UNREACHABLE ({error})"),
+        Err(error) => ui::print_row(
+            &mut console,
+            "models",
+            &format!("UNREACHABLE ({error})"),
+            theme::error(),
+        )?,
     }
 
-    println!("\nvault");
-    if let Ok(vault) = Vault::load(&cli.vault) {
-        let stats = vault.stats();
-        println!("  root        : {}", vault.root().display());
-        println!(
-            "  indexes     : {} notes, {} tags, {} headings, {} links ({} unresolved)",
-            stats.notes, stats.tags, stats.headings, stats.links, stats.unresolved_links
-        );
-        let unresolved = vault.unresolved_links();
-        if !unresolved.is_empty() {
-            let sample: Vec<&str> = unresolved.iter().take(5).map(String::as_str).collect();
-            println!(
-                "  unresolved  : {} (e.g. {})",
-                unresolved.len(),
-                sample.join(", ")
-            );
+    ui::print_rule(&mut console, "vault")?;
+    match Vault::load(&cli.vault) {
+        Ok(vault) => {
+            ui::print_vault_stats(
+                &mut console,
+                vault.stats(),
+                &vault.root().display().to_string(),
+            )?;
+            let unresolved = vault.unresolved_links();
+            if !unresolved.is_empty() {
+                let sample: Vec<&str> = unresolved.iter().take(5).map(String::as_str).collect();
+                ui::print_hint(
+                    &mut console,
+                    &format!(
+                        "{} unresolved link(s), e.g. {}",
+                        unresolved.len(),
+                        sample.join(", ")
+                    ),
+                )?;
+            }
         }
-    } else {
-        println!("  root        : FAILED (vault path could not be indexed)");
+        Err(_) => ui::print_row(
+            &mut console,
+            "root",
+            "FAILED (vault path could not be indexed)",
+            theme::error(),
+        )?,
     }
 
-    println!("\nstatus: {}", if model_ok { "ready" } else { "not ready" });
-    println!("next  : mcp_obsidian --vault <path> ask \"what do my notes say about <topic>?\"");
+    ui::print_rule(&mut console, "status")?;
+    if model_ok {
+        ui::print_line(&mut console, "ready", theme::success())?;
+        ui::print_hint(
+            &mut console,
+            "next: mcp_obsidian --vault <path> ask \"what do my notes say about <topic>?\"",
+        )?;
+    } else {
+        ui::print_line(&mut console, "not ready", theme::error())?;
+        ui::print_hint(&mut console, "fix the ollama model check above, then re-run doctor")?;
+    }
     Ok(())
 }
 
