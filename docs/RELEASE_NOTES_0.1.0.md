@@ -51,8 +51,13 @@ Also listed in the Official MCP Registry as
 
 ## Notes
 
-- These bundles are **not signed**. Claude Desktop reports "not signed" on
-  install; `mcpb sign` is available if that matters to you.
+- These bundles are **unsigned**. That is normal for `.mcpb` and nothing to act
+  on: `mcpb pack` does not sign by default. They are not signed here because the
+  upstream tooling is currently broken — `mcpb sign` produces a bundle Claude
+  Desktop refuses to install
+  ([#278](https://github.com/anthropics/mcpb/issues/278)), and `mcpb verify`
+  reports signed bundles as unsigned
+  ([#276](https://github.com/anthropics/mcpb/issues/276)).
 - The public demo endpoint at `https://mcp-obsidian.duckdns.org/mcp` serves a
   synthetic demo vault and is unauthenticated by design. Never point it at
   private notes.
