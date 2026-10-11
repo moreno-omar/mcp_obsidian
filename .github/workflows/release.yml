@@ -48,11 +48,13 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          # On a tag push this is the tag. On workflow_dispatch it would otherwise
-          # be the default branch, which is not necessarily what we mean to
-          # release — build the commit the user named.
-          ref: ${{ github.event.inputs.tag || github.ref }}
+        # Deliberately NO `ref:` override: actions/checkout defaults to
+        # github.ref, which is the default branch for a manual run and the tag
+        # for a tag push. Pinning it to the named tag looks more precise and is
+        # wrong -- a tag can predate the tooling this workflow needs, and the
+        # checkout then yields a tree with no stamper script. That is exactly
+        # how run #1 failed on all four runners. The version guard below
+        # enforces the property that actually matters.
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -63,6 +65,24 @@ jobs:
         run: |
           ref="${{ github.event.inputs.tag || github.ref_name }}"
           echo "VERSION=${ref#v}" >> "$GITHUB_ENV"
+
+      - name: Verify the checked-out source matches the release version
+        shell: bash
+        run: |
+          set -euo pipefail
+          crate="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
+          manifest="$(sed -n 's/^  "version": "\(.*\)",$/\1/p' mcpb/manifest.json | head -n1)"
+          echo "release version    : $VERSION"
+          echo "Cargo.toml         : $crate"
+          echo "mcpb/manifest.json : $manifest"
+          if [ "$crate" != "$VERSION" ]; then
+            echo "::error::Cargo.toml says $crate but this release is $VERSION"
+            exit 1
+          fi
+          if [ "$manifest" != "$VERSION" ]; then
+            echo "::error::mcpb/manifest.json says $manifest but this release is $VERSION"
+            exit 1
+          fi
 
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}
