@@ -25,10 +25,10 @@ on:
         required: true
         type: string
       publish:
-        description: 'Create the GitHub Release. Uncheck to build and verify only.'
+        description: 'Create the GitHub Release. Leave false to build and verify only.'
         required: false
         type: boolean
-        default: true
+        default: false
 
 permissions:
   contents: write
@@ -115,9 +115,9 @@ jobs:
 
   release:
     needs: build
-    # A tag push always releases. A manual run may be a build-only rehearsal:
-    # the first time this runs, the macOS and Windows builds are unproven, and a
-    # red build should not be able to publish anything.
+    # A tag push always releases. A manual run releases only when explicitly
+    # asked: the macOS and Windows builds are unproven the first time, and a
+    # half-verified run should not be able to publish by default.
     if: ${{ github.event_name == 'push' || github.event.inputs.publish == 'true' }}
     runs-on: ubuntu-latest
     steps:
