@@ -1,0 +1,159 @@
+# Build one .mcpb per platform and attach them to a GitHub Release.
+#
+# Why CI and not the laptop: a bundle carries a native binary, so a
+# Claude-Desktop-installable bundle must be built on macOS and Windows. Only
+# x86_64-unknown-linux-gnu is installed locally, and a macOS build needs the
+# Apple SDK. This workflow is also the mechanism that attaches the assets, so
+# releasing is one tag rather than a manual upload.
+#
+# Drop this file at .github/workflows/release.yml in moreno-omar/mcp_obsidian,
+# together with scripts/2026-10-11_stamp-mcpb-manifest.py.
+#
+# Cut a release:  git tag v0.1.0 && git push origin v0.1.0
+# Re-run / dry run: Actions -> release-mcpb -> Run workflow -> tag
+
+name: release-mcpb
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build and release (must already exist)'
+        required: true
+        type: string
+      publish:
+        description: 'Create the GitHub Release. Uncheck to build and verify only.'
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.platform }}-${{ matrix.arch }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,  target: x86_64-unknown-linux-gnu, platform: linux,  arch: x64,   python: python3 }
+          - { os: macos-latest,   target: aarch64-apple-darwin,     platform: darwin, arch: arm64, python: python3 }
+          - { os: macos-13,       target: x86_64-apple-darwin,      platform: darwin, arch: x64,   python: python3 }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc,   platform: win32,  arch: x64,   python: python }
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # On a tag push this is the tag. On workflow_dispatch it would otherwise
+          # be the default branch, which is not necessarily what we mean to
+          # release — build the commit the user named.
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Resolve version from the ref
+        shell: bash
+        run: |
+          ref="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "VERSION=${ref#v}" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Stage, stamp and pack the bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          name=mcp-obsidian
+          binary="target/${{ matrix.target }}/release/$name"
+          if [ "${{ matrix.platform }}" = "win32" ]; then
+            binary="$binary.exe"; name="$name.exe"
+          fi
+
+          stage=dist/stage
+          rm -rf "$stage"; mkdir -p "$stage/server"
+          cp mcpb/manifest.json "$stage/manifest.json"
+          cp "$binary" "$stage/server/$name"
+          chmod 755 "$stage/server/$name" 2>/dev/null || true
+
+          # Rewrites compatibility.platforms to this platform only, and fixes
+          # the Windows entry point. Fails if the entry point is not staged.
+          ${{ matrix.python }} scripts/2026-10-11_stamp-mcpb-manifest.py \
+            "$stage" "${{ matrix.platform }}"
+
+          bundle="dist/mcp-obsidian-${VERSION}-${{ matrix.platform }}-${{ matrix.arch }}.mcpb"
+          npx --yes @anthropic-ai/mcpb pack "$stage" "$bundle"
+
+      - name: Verify the packed manifest claims only this platform
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle="dist/mcp-obsidian-${VERSION}-${{ matrix.platform }}-${{ matrix.arch }}.mcpb"
+          ${{ matrix.python }} - "$bundle" "${{ matrix.platform }}" <<'PY'
+          import json, sys, zipfile
+          bundle, expected = sys.argv[1], sys.argv[2]
+          with zipfile.ZipFile(bundle) as archive:
+              manifest = json.loads(archive.read("manifest.json"))
+          platforms = manifest["compatibility"]["platforms"]
+          assert platforms == [expected], f"{bundle} advertises {platforms}, expected [{expected!r}]"
+          assert "server/mcp-obsidian" in " ".join(archive.namelist())
+          print(f"OK {bundle}: platforms={platforms} entry_point={manifest['server']['entry_point']}")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mcpb-${{ matrix.platform }}-${{ matrix.arch }}
+          path: dist/*.mcpb
+          if-no-files-found: error
+
+  release:
+    needs: build
+    # A tag push always releases. A manual run may be a build-only rehearsal:
+    # the first time this runs, the macOS and Windows builds are unproven, and a
+    # red build should not be able to publish anything.
+    if: ${{ github.event_name == 'push' || github.event.inputs.publish == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          set -euo pipefail
+          cd assets
+          for f in *.mcpb; do sha256sum "$f" > "$f.sha256"; done
+          cat ./*.sha256
+
+      - name: Create or update the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          notes="docs/RELEASE_NOTES_${tag#v}.md"
+          # The notes file lives in the repo, so it ships with the code it
+          # describes. Fall back to generated notes rather than fail a release.
+          if [ ! -f "$notes" ]; then
+            echo "no $notes; falling back to generated notes"
+            printf '' > /tmp/notes.md
+            notes=/tmp/notes.md
+          fi
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" assets/* --clobber
+            grep -q . "$notes" && gh release edit "$tag" --notes-file "$notes" || true
+          else
+            gh release create "$tag" \
+              --title "mcp-obsidian ${tag#v}" \
+              --notes-file "$notes" \
+              assets/*
+          fi
+          gh release view "$tag" --json assets --jq '.assets[].name'
