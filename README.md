@@ -4,6 +4,10 @@
 - more possible with the Open Knowledge Format (OKF) that Google is encouraging. Which mostly uses markdown.
 - markdown, notes, and better access to local info makes me think there should be an app to connect an LLM to obsidian.
 
+## Install in Claude Desktop
+
+Download the bundle for your Mac or PC from the [latest release](https://github.com/moreno-omar/mcp_obsidian/releases/latest), open it, point it at your vault.
+
 ### Goals
 - have tool check notes using: title, tags, and follow links in notes
 - to have as a vault for llm to make notes. To solve problems, document it, and see if new problems are similar.
