@@ -1,12 +1,25 @@
+## Install in Claude Desktop
+
+Download the bundle for your Mac or PC from the [latest release](https://github.com/moreno-omar/mcp_obsidian/releases/latest), open it, point it at your vault.
+
+### About "Not signed"
+
+The bundles are unsigned. That is normal for `.mcpb`: `mcpb pack` does not sign by
+default, and signing is a separate opt-in step with a certificate of your own. If you
+run `mcpb info` on the download you will see `WARNING: Not signed` — ignore it. It has
+no effect on installing or using the extension.
+
+Signing is not enabled yet because the upstream tooling is currently broken:
+`mcpb sign` produces a bundle that Claude Desktop refuses to install
+([#278](https://github.com/anthropics/mcpb/issues/278)), and `mcpb verify` reports
+signed bundles as unsigned ([#276](https://github.com/anthropics/mcpb/issues/276)).
+It will be added once those are fixed.
+
 ## MCP tool using obsidian
 
 - going with the idea that it's better to search for local information using tags and search over RAG.
 - more possible with the Open Knowledge Format (OKF) that Google is encouraging. Which mostly uses markdown.
 - markdown, notes, and better access to local info makes me think there should be an app to connect an LLM to obsidian.
-
-## Install in Claude Desktop
-
-Download the bundle for your Mac or PC from the [latest release](https://github.com/moreno-omar/mcp_obsidian/releases/latest), open it, point it at your vault.
 
 ### Goals
 - have tool check notes using: title, tags, and follow links in notes
