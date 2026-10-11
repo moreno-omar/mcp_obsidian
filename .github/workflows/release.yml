@@ -41,10 +41,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest,  target: x86_64-unknown-linux-gnu, platform: linux,  arch: x64,   python: python3 }
-          - { os: macos-latest,   target: aarch64-apple-darwin,     platform: darwin, arch: arm64, python: python3 }
-          - { os: macos-13,       target: x86_64-apple-darwin,      platform: darwin, arch: x64,   python: python3 }
-          - { os: windows-latest, target: x86_64-pc-windows-msvc,   platform: win32,  arch: x64,   python: python }
+          # Runner labels are pinned rather than taken from -latest.
+          #   * macos-13 was RETIRED (runner-images issues #13046, #13413). A job
+          #     targeting it queues forever instead of failing, which is what
+          #     stalled run #2 for an hour. macos-15-intel is the current x64
+          #     macOS label.
+          #   * ubuntu-latest migrates to Ubuntu 26 on 2026-10-19, per the
+          #     warning printed by run #1. Pinned so a future release cannot be
+          #     broken by a silent image change.
+          - { os: ubuntu-24.04,   target: x86_64-unknown-linux-gnu, platform: linux,  arch: x64,   python: python3 }
+          - { os: macos-26,       target: aarch64-apple-darwin,     platform: darwin, arch: arm64, python: python3 }
+          - { os: macos-15-intel, target: x86_64-apple-darwin,      platform: darwin, arch: x64,   python: python3 }
+          - { os: windows-2025,   target: x86_64-pc-windows-msvc,   platform: win32,  arch: x64,   python: python }
 
     steps:
       - uses: actions/checkout@v4
