@@ -149,6 +149,10 @@ jobs:
     if: ${{ github.event_name == 'push' || github.event.inputs.publish == 'true' }}
     runs-on: ubuntu-latest
     steps:
+      # Needed for docs/RELEASE_NOTES_<version>.md. Without this the notes file
+      # is absent from the job's workspace and the release publishes blank.
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           path: assets
@@ -167,21 +171,28 @@ jobs:
         run: |
           set -euo pipefail
           tag="${{ github.event.inputs.tag || github.ref_name }}"
-          notes="docs/RELEASE_NOTES_${tag#v}.md"
-          # The notes file lives in the repo, so it ships with the code it
-          # describes. Fall back to generated notes rather than fail a release.
-          if [ ! -f "$notes" ]; then
-            echo "no $notes; falling back to generated notes"
-            printf '' > /tmp/notes.md
-            notes=/tmp/notes.md
+          notes_file="docs/RELEASE_NOTES_${tag#v}.md"
+
+          # --notes-file and --generate-notes are mutually exclusive, so build
+          # the argument list rather than passing both. A missing notes file
+          # degrades to generated notes; it must never publish a blank one.
+          notes_args=(--generate-notes)
+          if [ -f "$notes_file" ]; then
+            notes_args=(--notes-file "$notes_file")
+            echo "release notes: $notes_file"
+          else
+            echo "::warning::$notes_file not found; using generated notes"
           fi
+
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" assets/* --clobber
-            grep -q . "$notes" && gh release edit "$tag" --notes-file "$notes" || true
+            if [ -f "$notes_file" ]; then
+              gh release edit "$tag" --notes-file "$notes_file"
+            fi
           else
             gh release create "$tag" \
               --title "mcp-obsidian ${tag#v}" \
-              --notes-file "$notes" \
+              "${notes_args[@]}" \
               assets/*
           fi
           gh release view "$tag" --json assets --jq '.assets[].name'
